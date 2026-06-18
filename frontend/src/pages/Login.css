@@ -1,0 +1,240 @@
+/* From Uiverse.io by glisovic01 */
+
+.login-page {
+  min-height: 100vh;
+  background: #1a1a2e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-box {
+  position: relative;
+  width: 400px;
+  padding: 40px;
+  background: rgba(0,0,0,.9);
+  box-sizing: border-box;
+  box-shadow: 0 15px 25px rgba(0,0,0,.6);
+  border-radius: 10px;
+}
+
+.login-box p:first-child {
+  margin: 0 0 30px;
+  padding: 0;
+  color: #fff;
+  text-align: center;
+  font-size: 1.5rem;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+
+.login-box .user-box {
+  position: relative;
+}
+
+.login-box .user-box input {
+  width: 100%;
+  padding: 10px 40px 10px 0;
+  font-size: 16px;
+  color: #fff;
+  margin-bottom: 30px;
+  border: none;
+  border-bottom: 1px solid #fff;
+  outline: none;
+  background: transparent;
+}
+
+.login-box .user-box .password-toggle {
+  position: absolute;
+  right: 0;
+  top: 8px;
+  background: transparent;
+  border: none;
+  color: #aaa;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.3s;
+  z-index: 10;
+}
+
+.login-box .user-box .password-toggle:hover {
+  color: #fff;
+}
+
+.login-box .user-box .password-toggle svg {
+  width: 20px;
+  height: 20px;
+}
+
+.login-box .user-box label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 10px 0;
+  font-size: 16px;
+  color: #fff;
+  pointer-events: none;
+  transition: .5s;
+}
+
+.login-box .user-box input:focus ~ label,
+.login-box .user-box input:valid ~ label {
+  top: -20px;
+  left: 0;
+  color: #fff;
+  font-size: 12px;
+}
+
+.login-box form .submit-btn {
+  position: relative;
+  display: inline-block;
+  padding: 10px 20px;
+  font-weight: bold;
+  color: #fff;
+  font-size: 16px;
+  text-decoration: none;
+  text-transform: uppercase;
+  overflow: hidden;
+  transition: .5s;
+  margin-top: 40px;
+  letter-spacing: 3px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.login-box .submit-btn:hover {
+  background: #fff;
+  color: #272727;
+  border-radius: 5px;
+}
+
+.login-box .submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.login-box .submit-btn span {
+  position: absolute;
+  display: block;
+}
+
+.login-box .submit-btn span:nth-child(1) {
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #fff);
+  animation: btn-anim1 1.5s linear infinite;
+}
+
+@keyframes btn-anim1 {
+  0% { left: -100%; }
+  50%,100% { left: 100%; }
+}
+
+.login-box .submit-btn span:nth-child(2) {
+  top: -100%;
+  right: 0;
+  width: 2px;
+  height: 100%;
+  background: linear-gradient(180deg, transparent, #fff);
+  animation: btn-anim2 1.5s linear infinite;
+  animation-delay: .375s;
+}
+
+@keyframes btn-anim2 {
+  0% { top: -100%; }
+  50%,100% { top: 100%; }
+}
+
+.login-box .submit-btn span:nth-child(3) {
+  bottom: 0;
+  right: -100%;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(270deg, transparent, #fff);
+  animation: btn-anim3 1.5s linear infinite;
+  animation-delay: .75s;
+}
+
+@keyframes btn-anim3 {
+  0% { right: -100%; }
+  50%,100% { right: 100%; }
+}
+
+.login-box .submit-btn span:nth-child(4) {
+  bottom: -100%;
+  left: 0;
+  width: 2px;
+  height: 100%;
+  background: linear-gradient(360deg, transparent, #fff);
+  animation: btn-anim4 1.5s linear infinite;
+  animation-delay: 1.125s;
+}
+
+@keyframes btn-anim4 {
+  0% { bottom: -100%; }
+  50%,100% { bottom: 100%; }
+}
+
+.login-box p:last-child {
+  color: #aaa;
+  font-size: 14px;
+}
+
+.login-box a.a2 {
+  color: #fff;
+  text-decoration: none;
+}
+
+.login-box a.a2:hover {
+  color: #aaa;
+}
+
+/* 错误提示 */
+.login-box .field-error {
+  color: #ff6b6b;
+  font-size: 12px;
+  margin-top: -24px;
+  margin-bottom: 12px;
+  display: block;
+}
+
+/* 高级选项折叠区 */
+.login-box .advanced-toggle {
+  background: transparent;
+  border: none;
+  color: #aaa;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  margin-bottom: 10px;
+}
+
+.login-box .advanced-toggle:hover {
+  color: #fff;
+}
+
+.login-box .advanced-section {
+  margin-bottom: 10px;
+}
+
+.login-box .setup-hint {
+  color: #f0a500;
+  font-size: 12px;
+  margin-top: -24px;
+  margin-bottom: 12px;
+  display: block;
+}
+
+.login-box .footer-hint {
+  color: #aaa;
+  font-size: 13px;
+  text-align: center;
+  margin-top: 20px;
+}

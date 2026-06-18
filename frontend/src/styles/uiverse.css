@@ -1,0 +1,440 @@
+/**
+ * uiverse.css — 移植自 UGuard，配色已调整为 CloudHook 蓝紫系
+ *
+ * 包含：
+ *  - .btn-3d-uiverse (.btn-3d-blue / .btn-3d-indigo / .btn-3d-gray / .btn-3d-red)
+ *  - .btn-delete-uiverse
+ *  - .btn-logout-uiverse
+ *  - .btn-refresh-uiverse
+ *  - .btn-toggle-* (开关)
+ *  - .wave-group (波浪输入框聚焦动效)
+ *  - .modal-backdrop / .modal-box (弹窗)
+ *  - .slide-up 动画
+ */
+
+/* ───────────────────────────── 3D 按钮 ───────────────────────────── */
+.btn-3d-uiverse {
+  --button_radius: 12px;
+  --button_color: #e8e8e8;
+  --button_outline_color: #000000;
+  font-size: 14px;
+  font-weight: bold;
+  border: none;
+  cursor: pointer;
+  border-radius: var(--button_radius);
+  background: var(--button_outline_color);
+  position: relative;
+  padding: 0;
+  transition: opacity 0.2s;
+}
+
+.btn-3d-uiverse:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.btn-3d-uiverse .button_top {
+  display: block;
+  box-sizing: border-box;
+  border: 2px solid var(--button_outline_color);
+  border-radius: var(--button_radius);
+  padding: 0.5rem 1.2rem;
+  background: var(--button_color);
+  color: var(--button_outline_color);
+  transform: translateY(-0.2em);
+  transition: transform 0.1s ease;
+  white-space: nowrap;
+}
+
+.btn-3d-uiverse:hover:not(:disabled) .button_top {
+  transform: translateY(-0.3em);
+}
+
+.btn-3d-uiverse:active:not(:disabled) .button_top {
+  transform: translateY(0);
+}
+
+/* 蓝色主色 — CloudHook 主操作 */
+.btn-3d-blue {
+  --button_color: #3b82f6; /* blue-500 */
+  --button_outline_color: #1d4ed8; /* blue-700 */
+}
+.btn-3d-blue .button_top {
+  color: #fff;
+}
+
+/* 靛蓝色 — CloudHook 强调色 */
+.btn-3d-indigo {
+  --button_color: #6366f1; /* indigo-500 */
+  --button_outline_color: #3730a3; /* indigo-800 */
+}
+.btn-3d-indigo .button_top {
+  color: #fff;
+}
+
+/* 灰色 — 次要/取消操作 */
+.btn-3d-gray {
+  --button_color: #f4f4f5; /* zinc-100 */
+  --button_outline_color: #27272a; /* zinc-800 */
+}
+.btn-3d-gray .button_top {
+  color: #27272a;
+}
+
+/* 红色 — 危险操作 */
+.btn-3d-red {
+  --button_color: #ef4444; /* red-500 */
+  --button_outline_color: #7f1d1d; /* red-900 */
+}
+.btn-3d-red .button_top {
+  color: #fff;
+}
+
+/* ───────────────────────────── 删除按钮（图标滑入） ───────────────────────────── */
+.btn-delete-uiverse {
+  width: 120px;
+  height: 40px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  background: #ef4444;
+  border: none;
+  border-radius: 12px;
+  box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.15);
+  position: relative;
+  overflow: hidden;
+  transition: 200ms;
+}
+
+.btn-delete-uiverse .btn-text {
+  transform: translateX(25px);
+  color: white;
+  font-weight: bold;
+  font-size: 14px;
+  transition: 200ms;
+}
+
+.btn-delete-uiverse .icon {
+  position: absolute;
+  border-left: 1px solid #b91c1c;
+  transform: translateX(85px);
+  height: 30px;
+  width: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: 200ms;
+}
+
+.btn-delete-uiverse svg {
+  width: 15px;
+  fill: white;
+}
+
+.btn-delete-uiverse:hover {
+  background: #dc2626;
+}
+
+.btn-delete-uiverse:hover .btn-text {
+  color: transparent;
+}
+
+.btn-delete-uiverse:hover .icon {
+  width: 120px;
+  border-left: none;
+  transform: translateX(0);
+}
+
+.btn-delete-uiverse:active .icon svg {
+  transform: scale(0.8);
+}
+
+/* ───────────────────────────── 退出登录按钮（展开圆圈） ───────────────────────────── */
+.btn-logout-uiverse {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition-duration: 0.3s;
+  box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.1);
+  background-color: #ef4444;
+}
+
+.btn-logout-uiverse .sign {
+  width: 100%;
+  transition-duration: 0.3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-logout-uiverse .sign svg {
+  width: 18px;
+  fill: white;
+}
+
+.btn-logout-uiverse .btn-text {
+  position: absolute;
+  right: 0%;
+  width: 0%;
+  opacity: 0;
+  color: white;
+  font-size: 14px;
+  font-weight: 600;
+  transition-duration: 0.3s;
+  white-space: nowrap;
+}
+
+.btn-logout-uiverse:hover {
+  width: 110px;
+  border-radius: 40px;
+}
+
+.btn-logout-uiverse:hover .sign {
+  width: 30%;
+  padding-left: 12px;
+}
+
+.btn-logout-uiverse:hover .btn-text {
+  opacity: 1;
+  width: 70%;
+  padding-right: 10px;
+}
+
+.btn-logout-uiverse:active {
+  transform: translate(2px, 2px);
+}
+
+/* ───────────────────────────── 刷新按钮 ───────────────────────────── */
+.btn-refresh-uiverse {
+  color: white;
+  background: #18181b;
+  font-weight: 600;
+  border-radius: 14px;
+  font-size: 14px;
+  height: 42px;
+  min-width: 100px;
+  box-sizing: border-box;
+  padding: 0 1rem;
+  cursor: pointer;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid rgba(0, 0, 0, 0.06);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 8px -1px rgba(0, 0, 0, 0.02);
+}
+
+.btn-refresh-uiverse:hover:not(:disabled) {
+  /* 蓝紫系高亮，替换 UGuard 琥珀色 */
+  border-color: #6366f1;
+  color: #6366f1;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px -2px rgba(99, 102, 241, 0.15);
+}
+
+.btn-refresh-uiverse:active:not(:disabled) {
+  transform: translateY(0);
+  background: #f4f4f5;
+  color: #18181b;
+}
+
+.btn-refresh-uiverse:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-refresh-uiverse svg {
+  display: inline;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-right: 0.5rem;
+  color: inherit;
+  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.btn-refresh-uiverse:focus svg {
+  animation: spin-uiverse 0.5s linear;
+}
+
+@keyframes spin-uiverse {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ───────────────────────────── 开关 (Toggle) ───────────────────────────── */
+.btn-toggle-input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.btn-toggle-container {
+  width: 44px;
+  height: 24px;
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.btn-toggle-switch {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background-color: #e5e7eb;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease-out;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.btn-toggle-slider {
+  width: 20px;
+  height: 20px;
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0px 2px 4px rgba(0, 0, 0, 0.15);
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  cursor: pointer;
+}
+
+/* 选中时：蓝紫渐变，替换 UGuard 绿色 */
+.btn-toggle-input:checked + .btn-toggle-switch {
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  border-color: #4f46e5;
+}
+
+.btn-toggle-input:checked + .btn-toggle-switch .btn-toggle-slider {
+  left: 22px;
+}
+
+.btn-toggle-input:disabled + .btn-toggle-switch {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ───────────────────────────── 波浪输入框 ───────────────────────────── */
+.wave-group {
+  position: relative;
+  width: 100%;
+}
+
+.wave-group .input {
+  font-size: 14px;
+  padding: 12px 10px 8px 5px;
+  display: block;
+  width: 100%;
+  border: none;
+  border-bottom: 2px solid #e5e7eb;
+  background: transparent;
+  color: #1e293b;
+  font-weight: 500;
+  transition: border-color 0.2s;
+}
+
+.wave-group .input:focus {
+  outline: none;
+}
+
+.wave-group .label {
+  color: #94a3b8;
+  font-size: 14px;
+  font-weight: 500;
+  position: absolute;
+  pointer-events: none;
+  left: 5px;
+  top: 10px;
+  display: flex;
+  transition: 0.3s ease all;
+}
+
+.wave-group .label-char {
+  transition: 0.2s ease all;
+  transition-delay: calc(var(--index) * 0.05s);
+}
+
+/* 聚焦/有值时：蓝紫色标签上移 */
+.wave-group .input:focus ~ .label .label-char,
+.wave-group .input:not(:placeholder-shown) ~ .label .label-char {
+  transform: translateY(-22px);
+  font-size: 12px;
+  color: #6366f1;
+  font-weight: 700;
+}
+
+.wave-group .bar {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.wave-group .bar:before,
+.wave-group .bar:after {
+  content: '';
+  height: 2px;
+  width: 0;
+  bottom: 0;
+  position: absolute;
+  /* 蓝紫渐变下划线 */
+  background: linear-gradient(90deg, #3b82f6, #6366f1);
+  transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1) all;
+}
+
+.wave-group .bar:before { left: 50%; }
+.wave-group .bar:after  { right: 50%; }
+
+.wave-group .input:focus ~ .bar:before,
+.wave-group .input:focus ~ .bar:after {
+  width: 50%;
+}
+
+/* ───────────────────────────── 弹窗遮罩 / 容器 ───────────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.3);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.modal-box {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow:
+    0 25px 50px -12px rgba(0, 0, 0, 0.12),
+    0 0 0 1px rgba(99, 102, 241, 0.05);
+  max-width: 28rem;
+  width: 100%;
+  margin: 0 1rem;
+  padding: 1.5rem;
+  animation: slide-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

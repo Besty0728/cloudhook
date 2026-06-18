@@ -1,0 +1,679 @@
+/**
+ * 配置管理页面
+ * 涵盖：Bark 通知、通知策略、角色/Persona、风险策略、任务边界、风控（geo/IP/限流）
+ */
+
+import { useEffect, useState, useCallback } from 'react';
+import { getConfig, updateConfig, testBarkPush } from '@/api/config';
+import { Config } from '@/types/api';
+import { Button, Toggle, Input, TagInput } from '@/components/ui';
+import { useToast } from '@/hooks/useToast';
+import Toast from '@/components/Toast';
+import LoadingSpinner from '@/components/LoadingSpinner';
+
+// ─── 脱敏 bark_key 判断 ────────────────────────────────────────────────────────
+// 后端返回形如 xxxx****xxxx，包含 **** 时视为脱敏值，不提交
+const IS_MASKED = (v: string) => v.includes('****');
+
+// ─── 区块卡片容器 ─────────────────────────────────────────────────────────────
+function SectionCard({
+  title,
+  icon,
+  children,
+  onSave,
+  saving,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+  onSave: () => void;
+  saving: boolean;
+}) {
+  return (
+    <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-200 overflow-hidden">
+      {/* 卡片标题栏 */}
+      <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-br from-slate-700 to-gray-900 rounded-xl flex items-center justify-center">
+              {icon}
+            </div>
+            <h2 className="text-lg font-semibold text-gray-900 tracking-tight">{title}</h2>
+          </div>
+          <Button variant="primary" onClick={onSave} disabled={saving}>
+            {saving ? '保存中…' : '保存'}
+          </Button>
+        </div>
+      </div>
+      {/* 卡片内容 */}
+      <div className="px-6 py-5 space-y-5">{children}</div>
+    </div>
+  );
+}
+
+// ─── 标签行（label + 子内容横排）────────────────────────────────────────────
+function FieldRow({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-1.5">
+        <span className="text-sm font-medium text-gray-700 tracking-wide">{label}</span>
+        {hint && <span className="text-xs text-gray-400 tracking-wide">（{hint}）</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// ─── IP 模式按钮组 ────────────────────────────────────────────────────────────
+const IP_MODES = [
+  { value: 'off', label: '关闭' },
+  { value: 'allowlist', label: '白名单' },
+  { value: 'blocklist', label: '黑名单' },
+] as const;
+
+// ─── 主页面组件 ───────────────────────────────────────────────────────────────
+export default function ConfigPage() {
+  const { toasts, removeToast, success, error: toastError } = useToast();
+
+  // 页面加载状态
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // ── 1. Bark 通知配置 ──────────────────────────────────────────────────────
+  // barkKey 存用户的当前输入；若与后端脱敏原值相同，则不提交
+  const [barkKey, setBarkKey] = useState('');
+  const [barkKeyOriginal, setBarkKeyOriginal] = useState('');
+  const [barkServer, setBarkServer] = useState('');
+  const [savingBark, setSavingBark] = useState(false);
+  const [testingBark, setTestingBark] = useState(false);
+
+  // ── 2. 通知策略 ───────────────────────────────────────────────────────────
+  const [notifMode, setNotifMode] = useState<'actionable' | 'verbose'>('actionable');
+  const [notifyDone, setNotifyDone] = useState(false);
+  const [notifyAttention, setNotifyAttention] = useState(false);
+  const [savingNotif, setSavingNotif] = useState(false);
+
+  // ── 3. 角色/Persona ───────────────────────────────────────────────────────
+  const [personaEnabled, setPersonaEnabled] = useState(false);
+  const [personaUserName, setPersonaUserName] = useState('');
+  const [savingPersona, setSavingPersona] = useState(false);
+
+  // ── 4. 风险策略 ───────────────────────────────────────────────────────────
+  const [dangerCmds, setDangerCmds] = useState<string[]>([]);
+  const [dangerPaths, setDangerPaths] = useState<string[]>([]);
+  const [protectedPaths, setProtectedPaths] = useState<string[]>([]);
+  const [dangerExts, setDangerExts] = useState<string[]>([]);
+  const [savingRisk, setSavingRisk] = useState(false);
+
+  // ── 5. 任务边界 ───────────────────────────────────────────────────────────
+  const [tbEnabled, setTbEnabled] = useState(false);
+  const [tbTaskName, setTbTaskName] = useState('');
+  const [tbAllowedPaths, setTbAllowedPaths] = useState<string[]>([]);
+  const [tbForbiddenPaths, setTbForbiddenPaths] = useState<string[]>([]);
+  const [tbForbiddenKw, setTbForbiddenKw] = useState<string[]>([]);
+  const [savingTb, setSavingTb] = useState(false);
+
+  // ── 6. 风控 risk_control ──────────────────────────────────────────────────
+  const [geoEnabled, setGeoEnabled] = useState(false);
+  const [geoCountries, setGeoCountries] = useState<string[]>([]);
+  const [geoRegions, setGeoRegions] = useState<string[]>([]);
+  const [ipMode, setIpMode] = useState<'off' | 'allowlist' | 'blocklist'>('off');
+  const [ipAllowlist, setIpAllowlist] = useState<string[]>([]);
+  const [ipBlocklist, setIpBlocklist] = useState<string[]>([]);
+  const [rlEnabled, setRlEnabled] = useState(false);
+  const [rlMax, setRlMax] = useState(60);
+  const [savingRc, setSavingRc] = useState(false);
+
+  // ─── 从后端加载配置并填充各状态 ────────────────────────────────────────────
+  const loadConfig = useCallback(async () => {
+    try {
+      setLoading(true);
+      setLoadError(null);
+      const cfg: Config = await getConfig();
+
+      // Bark
+      setBarkKey(cfg.bark_key ?? '');
+      setBarkKeyOriginal(cfg.bark_key ?? '');
+      setBarkServer(cfg.bark_server ?? '');
+
+      // 通知策略
+      setNotifMode(cfg.notification_policy?.mode ?? 'actionable');
+      setNotifyDone(cfg.notification_policy?.notify_on_task_done ?? false);
+      setNotifyAttention(cfg.notification_policy?.notify_on_interactive_attention ?? false);
+
+      // Persona
+      setPersonaEnabled(cfg.persona?.enabled ?? false);
+      setPersonaUserName(cfg.persona?.user_name ?? '');
+
+      // 风险策略
+      setDangerCmds(cfg.risk_policy?.dangerous_commands ?? []);
+      setDangerPaths(cfg.risk_policy?.dangerous_paths ?? []);
+      setProtectedPaths(cfg.risk_policy?.protected_paths ?? []);
+      setDangerExts(cfg.risk_policy?.dangerous_file_extensions ?? []);
+
+      // 任务边界
+      setTbEnabled(cfg.task_boundary?.enabled ?? false);
+      setTbTaskName(cfg.task_boundary?.task_name ?? '');
+      setTbAllowedPaths(cfg.task_boundary?.allowed_paths ?? []);
+      setTbForbiddenPaths(cfg.task_boundary?.forbidden_paths ?? []);
+      setTbForbiddenKw(cfg.task_boundary?.forbidden_keywords ?? []);
+
+      // 风控
+      setGeoEnabled(cfg.risk_control?.geo?.enabled ?? false);
+      setGeoCountries(cfg.risk_control?.geo?.allowed_countries ?? []);
+      setGeoRegions(cfg.risk_control?.geo?.allowed_regions ?? []);
+      setIpMode(cfg.risk_control?.ip?.mode ?? 'off');
+      setIpAllowlist(cfg.risk_control?.ip?.allowlist ?? []);
+      setIpBlocklist(cfg.risk_control?.ip?.blocklist ?? []);
+      setRlEnabled(cfg.risk_control?.rate_limit?.enabled ?? false);
+      setRlMax(cfg.risk_control?.rate_limit?.max_per_minute ?? 60);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载配置失败';
+      setLoadError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadConfig();
+  }, [loadConfig]);
+
+  // ─── 通用保存包装器（统一处理 HMAC 缺失提示、toast 反馈）──────────────────
+  const doSave = async (
+    payload: Partial<Config>,
+    setSaving: (b: boolean) => void,
+    label: string,
+  ) => {
+    setSaving(true);
+    try {
+      const res = await updateConfig(payload);
+      if (res.success !== false) {
+        success(`${label} 已保存`);
+      } else {
+        toastError(`${label} 保存失败：${res.message ?? '未知错误'}`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('HMAC secret not found') || msg.includes('hmac_secret')) {
+        toastError('缺少 HMAC Secret，请在登录页填写后重试');
+      } else {
+        toastError(`保存失败：${msg}`);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ─── 各区块保存回调 ────────────────────────────────────────────────────────
+  const handleSaveBark = () => {
+    // bark_key：若当前值等于脱敏原值（未修改），则不提交该字段
+    const payload: Partial<Config> = { bark_server: barkServer };
+    if (!IS_MASKED(barkKey) && barkKey !== barkKeyOriginal) {
+      payload.bark_key = barkKey;
+    }
+    doSave(payload, setSavingBark, 'Bark 通知配置');
+  };
+
+  const handleTestBark = async () => {
+    setTestingBark(true);
+    try {
+      const res = await testBarkPush();
+      if (res.success !== false) {
+        success('测试推送已发送，请检查您的 Bark 通知');
+      } else {
+        toastError(`测试推送失败：${res.message ?? '未知错误'}`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toastError(`测试推送失败：${msg}`);
+    } finally {
+      setTestingBark(false);
+    }
+  };
+
+  const handleSaveNotif = () =>
+    doSave(
+      {
+        notification_policy: {
+          mode: notifMode,
+          notify_on_task_done: notifyDone,
+          notify_on_interactive_attention: notifyAttention,
+        },
+      },
+      setSavingNotif,
+      '通知策略',
+    );
+
+  const handleSavePersona = () =>
+    doSave(
+      {
+        persona: {
+          enabled: personaEnabled,
+          user_name: personaUserName,
+          theme: '', // theme 字段保留原值（前端暂不配置）
+        },
+      },
+      setSavingPersona,
+      '角色配置',
+    );
+
+  const handleSaveRisk = () =>
+    doSave(
+      {
+        risk_policy: {
+          dangerous_commands: dangerCmds,
+          dangerous_paths: dangerPaths,
+          protected_paths: protectedPaths,
+          dangerous_file_extensions: dangerExts,
+        },
+      },
+      setSavingRisk,
+      '风险策略',
+    );
+
+  const handleSaveTb = () =>
+    doSave(
+      {
+        task_boundary: {
+          enabled: tbEnabled,
+          task_name: tbTaskName,
+          allowed_paths: tbAllowedPaths,
+          forbidden_paths: tbForbiddenPaths,
+          forbidden_keywords: tbForbiddenKw,
+        },
+      },
+      setSavingTb,
+      '任务边界',
+    );
+
+  const handleSaveRc = () =>
+    doSave(
+      {
+        risk_control: {
+          geo: {
+            enabled: geoEnabled,
+            allowed_countries: geoCountries,
+            allowed_regions: geoRegions,
+          },
+          ip: {
+            mode: ipMode,
+            allowlist: ipAllowlist,
+            blocklist: ipBlocklist,
+          },
+          rate_limit: {
+            enabled: rlEnabled,
+            max_per_minute: rlMax,
+          },
+        },
+      },
+      setSavingRc,
+      '风险控制',
+    );
+
+  // ─── 加载中 / 加载失败占位 ──────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="p-6 max-w-4xl mx-auto flex flex-col items-center justify-center min-h-[50vh]">
+        <LoadingSpinner size="lg" />
+        <p className="mt-4 text-gray-500">加载配置中…</p>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="p-6 max-w-4xl mx-auto">
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-8 text-center">
+          <p className="text-red-600 mb-4">{loadError}</p>
+          <Button variant="secondary" onClick={loadConfig}>
+            重试
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── 主渲染 ───────────────────────────────────────────────────────────────
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      {/* ── 页面标题 ── */}
+      <div className="mb-8">
+        <h1 className="text-4xl font-bold text-gray-900 tracking-tight mb-2">
+          配置管理
+        </h1>
+        <p className="text-gray-600 tracking-wide">管理 Bark 通知、通知策略、风险控制等全局设置</p>
+      </div>
+
+      <div className="space-y-6">
+
+        {/* ── 1. Bark 通知配置 ── */}
+        <SectionCard
+          title="Bark 通知配置"
+          icon={
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+            </svg>
+          }
+          onSave={handleSaveBark}
+          saving={savingBark}
+        >
+          <FieldRow
+            label="Bark Key"
+            hint="后端返回脱敏值（xxxx****xxxx），重新输入才会更新"
+          >
+            <Input
+              type="password"
+              value={barkKey}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBarkKey(e.target.value)}
+              placeholder="输入新的 Bark Key 以覆盖"
+            />
+            {IS_MASKED(barkKey) && (
+              <p className="text-xs text-amber-600">
+                当前显示脱敏值，保存时不会修改 Key。如需更新请清空后重新输入。
+              </p>
+            )}
+          </FieldRow>
+
+          <FieldRow label="Bark Server" hint="留空使用 Bark 官方服务器">
+            <Input
+              type="url"
+              value={barkServer}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBarkServer(e.target.value)}
+              placeholder="https://api.day.app"
+            />
+          </FieldRow>
+
+          <div className="pt-1">
+            <Button
+              variant="secondary"
+              onClick={handleTestBark}
+              disabled={testingBark}
+            >
+              {testingBark ? '发送中…' : '测试推送'}
+            </Button>
+          </div>
+        </SectionCard>
+
+        {/* ── 2. 通知策略 ── */}
+        <SectionCard
+          title="通知策略"
+          icon={
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+          }
+          onSave={handleSaveNotif}
+          saving={savingNotif}
+        >
+          {/* 通知模式切换 */}
+          <FieldRow label="通知模式">
+            <div className="flex gap-2">
+              {(['actionable', 'verbose'] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setNotifMode(m)}
+                  className={`px-4 py-2 rounded-xl text-sm font-medium border transition-all duration-150 tracking-wide ${
+                    notifMode === m
+                      ? 'bg-gradient-to-r from-slate-700 to-gray-900 text-white border-transparent shadow-md'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400'
+                  }`}
+                >
+                  {m === 'actionable' ? '精简（Actionable）' : '详细（Verbose）'}
+                </button>
+              ))}
+            </div>
+          </FieldRow>
+
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
+              <div>
+                <p className="text-sm font-medium text-gray-800 tracking-wide">任务完成通知</p>
+                <p className="text-xs text-gray-500 mt-0.5 tracking-wide">Agent 完成任务时推送通知</p>
+              </div>
+              <Toggle checked={notifyDone} onChange={setNotifyDone} />
+            </div>
+            <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
+              <div>
+                <p className="text-sm font-medium text-gray-800 tracking-wide">需要交互时通知</p>
+                <p className="text-xs text-gray-500 mt-0.5 tracking-wide">Agent 需要用户响应时推送通知</p>
+              </div>
+              <Toggle checked={notifyAttention} onChange={setNotifyAttention} />
+            </div>
+          </div>
+        </SectionCard>
+
+        {/* ── 3. 角色/Persona ── */}
+        <SectionCard
+          title="角色 / Persona"
+          icon={
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          }
+          onSave={handleSavePersona}
+          saving={savingPersona}
+        >
+          <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
+            <div>
+              <p className="text-sm font-medium text-gray-800 tracking-wide">启用角色配置</p>
+              <p className="text-xs text-gray-500 mt-0.5 tracking-wide">开启后 AI 将使用自定义人设</p>
+            </div>
+            <Toggle checked={personaEnabled} onChange={setPersonaEnabled} />
+          </div>
+
+          <FieldRow label="用户名称" hint="AI 在通知和消息中称呼您的名字">
+            <Input
+              value={personaUserName}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPersonaUserName(e.target.value)}
+              disabled={!personaEnabled}
+              placeholder="例：Betsy"
+            />
+          </FieldRow>
+        </SectionCard>
+
+        {/* ── 4. 风险策略 ── */}
+        <SectionCard
+          title="风险策略"
+          icon={
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          }
+          onSave={handleSaveRisk}
+          saving={savingRisk}
+        >
+          <FieldRow label="危险命令" hint="触发风险告警的命令关键词，如 rm -rf">
+            <TagInput value={dangerCmds} onChange={setDangerCmds} placeholder="输入命令后按 Enter 添加" />
+          </FieldRow>
+          <FieldRow label="危险路径" hint="禁止操作的路径前缀">
+            <TagInput value={dangerPaths} onChange={setDangerPaths} placeholder="如 /etc /sys" />
+          </FieldRow>
+          <FieldRow label="受保护路径" hint="只读保护，禁止写入的路径">
+            <TagInput value={protectedPaths} onChange={setProtectedPaths} placeholder="如 /var/log" />
+          </FieldRow>
+          <FieldRow label="危险文件扩展名" hint="禁止操作的文件类型（不含点），如 sh exe">
+            <TagInput value={dangerExts} onChange={setDangerExts} placeholder="如 sh exe bat" />
+          </FieldRow>
+        </SectionCard>
+
+        {/* ── 5. 任务边界 ── */}
+        <SectionCard
+          title="任务边界"
+          icon={
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+            </svg>
+          }
+          onSave={handleSaveTb}
+          saving={savingTb}
+        >
+          <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
+            <div>
+              <p className="text-sm font-medium text-gray-800">启用任务边界</p>
+              <p className="text-xs text-gray-500 mt-0.5">限制 Agent 只能在指定范围内操作</p>
+            </div>
+            <Toggle checked={tbEnabled} onChange={setTbEnabled} />
+          </div>
+
+          <FieldRow label="任务名称" hint="当前任务描述标识">
+            <Input
+              value={tbTaskName}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTbTaskName(e.target.value)}
+              disabled={!tbEnabled}
+              placeholder="如：代码审查任务"
+            />
+          </FieldRow>
+          <FieldRow label="允许路径" hint="Agent 可操作的路径前缀（空表示不限制）">
+            <TagInput
+              value={tbAllowedPaths}
+              onChange={setTbAllowedPaths}
+              disabled={!tbEnabled}
+              placeholder="如 /home/user/project"
+            />
+          </FieldRow>
+          <FieldRow label="禁止路径" hint="Agent 不可操作的路径前缀">
+            <TagInput
+              value={tbForbiddenPaths}
+              onChange={setTbForbiddenPaths}
+              disabled={!tbEnabled}
+              placeholder="如 /etc /usr"
+            />
+          </FieldRow>
+          <FieldRow label="禁止关键词" hint="输入或输出中含有这些词时拦截">
+            <TagInput
+              value={tbForbiddenKw}
+              onChange={setTbForbiddenKw}
+              disabled={!tbEnabled}
+              placeholder="如 drop table delete"
+            />
+          </FieldRow>
+        </SectionCard>
+
+        {/* ── 6. 风险控制（风控）── */}
+        <SectionCard
+          title="风险控制"
+          icon={
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          }
+          onSave={handleSaveRc}
+          saving={savingRc}
+        >
+          {/* 6a. 地理控制 */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 pb-2 border-b border-gray-200">
+              <span className="text-xs font-semibold uppercase tracking-wider text-gray-600">地理围栏</span>
+            </div>
+            <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
+              <div>
+                <p className="text-sm font-medium text-gray-800 tracking-wide">启用地理限制</p>
+                <p className="text-xs text-gray-500 mt-0.5 tracking-wide">仅允许指定国家/地区的请求通过</p>
+              </div>
+              <Toggle checked={geoEnabled} onChange={setGeoEnabled} />
+            </div>
+            <FieldRow label="允许的国家" hint="ISO 3166-1 alpha-2 国家码，如 CN US JP">
+              <TagInput
+                value={geoCountries}
+                onChange={setGeoCountries}
+                disabled={!geoEnabled}
+                placeholder="如 CN US JP"
+              />
+            </FieldRow>
+            <FieldRow label="允许的地区" hint="地区/省份代码，如 CN-BJ">
+              <TagInput
+                value={geoRegions}
+                onChange={setGeoRegions}
+                disabled={!geoEnabled}
+                placeholder="如 CN-BJ CN-SH"
+              />
+            </FieldRow>
+          </div>
+
+          {/* 6b. IP 控制 */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 pb-2 border-b border-gray-200">
+              <span className="text-xs font-semibold uppercase tracking-wider text-gray-600">IP 控制</span>
+            </div>
+            <FieldRow label="IP 控制模式">
+              <div className="flex gap-2">
+                {IP_MODES.map(({ value, label }) => (
+                  <button
+                    key={value}
+                    onClick={() => setIpMode(value)}
+                    className={`px-4 py-2 rounded-xl text-sm font-medium border transition-all duration-150 tracking-wide ${
+                      ipMode === value
+                        ? 'bg-gradient-to-r from-slate-700 to-gray-900 text-white border-transparent shadow-md'
+                        : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </FieldRow>
+            {ipMode === 'allowlist' && (
+              <FieldRow label="IP 白名单" hint="仅这些 IP 可通过，支持 CIDR">
+                <TagInput value={ipAllowlist} onChange={setIpAllowlist} placeholder="如 192.168.1.0/24" />
+              </FieldRow>
+            )}
+            {ipMode === 'blocklist' && (
+              <FieldRow label="IP 黑名单" hint="这些 IP 将被拒绝，支持 CIDR">
+                <TagInput value={ipBlocklist} onChange={setIpBlocklist} placeholder="如 10.0.0.1" />
+              </FieldRow>
+            )}
+          </div>
+
+          {/* 6c. 限流 */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 pb-2 border-b border-gray-200">
+              <span className="text-xs font-semibold uppercase tracking-wider text-gray-600">请求限流</span>
+            </div>
+            <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
+              <div>
+                <p className="text-sm font-medium text-gray-800 tracking-wide">启用限流</p>
+                <p className="text-xs text-gray-500 mt-0.5 tracking-wide">限制每分钟最大请求次数</p>
+              </div>
+              <Toggle checked={rlEnabled} onChange={setRlEnabled} />
+            </div>
+            <FieldRow label="每分钟最大请求数" hint="超出后返回 429">
+              <Input
+                type="number"
+                min={1}
+                max={10000}
+                value={String(rlMax)}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRlMax(Number(e.target.value) || 60)}
+                disabled={!rlEnabled}
+              />
+            </FieldRow>
+          </div>
+        </SectionCard>
+
+      </div>
+
+      {/* ── Toast 通知渲染 ── */}
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2" style={{ pointerEvents: 'none' }}>
+        {toasts.map((t) => (
+          <div key={t.id} style={{ pointerEvents: 'auto' }}>
+            <Toast message={t.message} type={t.type} onClose={() => removeToast(t.id)} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
