@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "http",
-            "url": "https://<your-domain>/api/notify",
+            "url": "https://<your-domain>/api/hook",
             "headers": { "X-CloudHook-Token": "<your-token>" }
           }
         ]
@@ -56,7 +56,7 @@
         "hooks": [
           {
             "type": "http",
-            "url": "https://<your-domain>/api/notify",
+            "url": "https://<your-domain>/api/hook",
             "headers": { "X-CloudHook-Token": "<your-token>" }
           }
         ]
