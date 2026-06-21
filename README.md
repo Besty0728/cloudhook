@@ -43,23 +43,37 @@ Claude Code  →  HTTP Hook  →  EdgeOne Functions  →  Bark  →  iPhone / Wa
 ```json
 {
   "hooks": {
-    "PermissionRequest": [{
-      "hooks": [{
-        "type": "http",
-        "url": "https://<your-domain>/api/hook",
-        "headers": { "X-CloudHook-Token": "<your-token>" }
-      }]
-    }],
-    "Stop": [{
-      "hooks": [{
-        "type": "http",
-        "url": "https://<your-domain>/api/hook",
-        "headers": { "X-CloudHook-Token": "<your-token>" }
-      }]
-    }]
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "https://<your-domain>/api/hook",
+            "headers": {
+              "X-CloudHook-Token": "<your-token>"
+            }
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "https://<your-domain>/api/hook",
+            "headers": {
+              "X-CloudHook-Token": "<your-token>"
+            }
+          }
+        ]
+      }
+    ]
   }
 }
 ```
+
+> 字段说明（对照 [Claude Code Hooks 官方 schema](https://code.claude.com/docs/zh-CN/hooks)）：`hooks` 按事件名分组，每个事件是一个数组，数组元素含 `hooks` 子数组；HTTP Hook 必填 `url`，CloudHook 通过自定义请求头 `X-CloudHook-Token` 携带设备 Token。Token 为字面量字符串（非 `$VAR`），无需配置 `allowedEnvVars`。Web 管理界面生成 Token 后会直接给出可粘贴的完整片段。
 
 重启 Claude Code，触发一次权限请求即可验证。
 
@@ -71,8 +85,8 @@ cloudhook/
 │   ├── _shared.js             # 核心模块（安全、分类、风险、Bark、KV）
 │   ├── _middleware.js          # 全局中间件
 │   └── api/
-│       ├── notify.js           # Webhook 处理（主）
-│       ├── hook.js             # Webhook 处理（备用）
+│       ├── hook.js             # Webhook 处理（主）
+│       ├── notify.js           # Webhook 处理（备用别名）
 │       ├── token.js            # 设备与 Token 管理
 │       ├── config.js           # 配置读写
 │       ├── events.js           # 事件日志

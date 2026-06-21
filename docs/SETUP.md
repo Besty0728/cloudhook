@@ -68,6 +68,8 @@
 
 重启 Claude Code，触发权限请求即可验证。
 
+> 字段对照官方 schema：`hooks` 按事件名分组 → 数组元素 → `hooks` 子数组 → HTTP Hook（必填 `url`）。设备 Token 通过自定义请求头 `X-CloudHook-Token` 传递，为字面量字符串，无需 `allowedEnvVars`。Web 管理界面生成 Token 后会给出可直接粘贴的完整配置片段。
+>
 > 参考 [Claude Code Hooks 官方文档](https://code.claude.com/docs/zh-CN/hooks)
 
 ## Token 管理
