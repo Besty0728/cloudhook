@@ -39,6 +39,8 @@ export interface Event {
   title?: string;
   body?: string;
   notified?: boolean;
+  /** 来源设备 ID（新日志才有；存量日志为 undefined） */
+  jti?: string;
   /** @deprecated 旧字段，后端已移除，保留以免旧页面编译报错 */
   message?: string;
   /** @deprecated 旧字段 */
@@ -58,6 +60,8 @@ export interface AccessLog {
   result: 'allowed' | 'denied' | 'rate_limited' | 'geo_blocked' | 'ip_blocked';
   reason?: string;
   event_name?: string;
+  /** 来源设备 ID（新日志才有；存量日志为 undefined） */
+  jti?: string;
 }
 
 /** 设备（Token）信息，对应 GET /api/token 返回的 Device 结构 */

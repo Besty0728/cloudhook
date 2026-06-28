@@ -228,7 +228,8 @@ export async function onRequestPost(context) {
           country_name: geoResult.location.countryName || undefined,
           user_agent: userAgent,
           result: 'allowed',
-          event_name: eventName
+          event_name: eventName,
+          jti: payload.jti
         });
 
         var barkKey = config.bark_key;
@@ -260,7 +261,8 @@ export async function onRequestPost(context) {
           body: message.body,
           risk_level: getRiskLevel(eventType, parsed),
           notified: true,
-          token_id: token.slice(0, 8)
+          token_id: token.slice(0, 8),
+          jti: payload.jti
         });
       } catch (bgErr) {
         // 后台错误只记日志，不影响响应

@@ -3,10 +3,11 @@
  * 包含两个 Tab：事件流（带类型筛选+分页+删除）和访问日志（风控可视化+分页+删除）
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { getEvents, deleteEvents, clearAllEvents } from '@/api/events';
 import { getAccessLogs, deleteAccessLogsByIds, clearAllAccessLogs } from '@/api/accessLogs';
-import { Event, AccessLog } from '@/types/api';
+import { getDevices } from '@/api/tokens';
+import { Event, AccessLog, Device } from '@/types/api';
 import { formatRelativeTime } from '@/utils/format';
 import { StatusBadge, EmptyState, Button, ConfirmDialog } from '@/components/ui';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -108,10 +109,11 @@ function ToastContainer({ toasts, onRemove }: { toasts: ToastItem[]; onRemove: (
 
 interface EventDetailModalProps {
   event: Event;
+  deviceNameMap: Map<string, string>;
   onClose: () => void;
 }
 
-function EventDetailModal({ event, onClose }: EventDetailModalProps) {
+function EventDetailModal({ event, deviceNameMap, onClose }: EventDetailModalProps) {
   return (
     /* 遮罩层 */
     <div
@@ -194,6 +196,12 @@ function EventDetailModal({ event, onClose }: EventDetailModalProps) {
                 {event.notified ? '已推送' : '未推送'}
               </span>
             </div>
+            <div>
+              <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">来源设备</p>
+              <p className="text-xs text-gray-600">
+                {event.jti ? (deviceNameMap.get(event.jti) || '已删除设备') : '—'}
+              </p>
+            </div>
           </div>
         </div>
 
@@ -229,14 +237,55 @@ function Checkbox({ checked, onChange }: { checked: boolean; onChange: () => voi
   );
 }
 
+// ─── 子组件：设备筛选下拉 ──────────────────────────────────────────────────────
+
+function DeviceFilter({
+  devices,
+  value,
+  onChange,
+}: {
+  devices: Device[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 bg-white text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-black/10 transition-colors cursor-pointer max-w-[180px] truncate"
+    >
+      <option value="">全部设备</option>
+      {devices.map((d) => (
+        <option key={d.jti} value={d.jti}>{d.device_name}</option>
+      ))}
+    </select>
+  );
+}
+
+// ─── 子组件：设备名标签（jti→设备名映射；查不到显示「已删除设备」；无 jti 不显示）──
+
+function DeviceTag({ jti, deviceNameMap }: { jti?: string; deviceNameMap: Map<string, string> }) {
+  if (!jti) return null;
+  const name = deviceNameMap.get(jti);
+  return (
+    <span className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-50 text-sky-700 border border-sky-200">
+      <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7h10v10H9zM9 12H5a2 2 0 00-2 2v3h6V12z" />
+      </svg>
+      {name || '已删除设备'}
+    </span>
+  );
+}
+
 // ─── 子组件：事件流 Tab ────────────────────────────────────────────────────────
 
-function EventsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: string) => void }) {
+function EventsTab({ addToast, devices, deviceNameMap }: { addToast: (type: ToastItem['type'], msg: string) => void; devices: Device[]; deviceNameMap: Map<string, string> }) {
   const [events, setEvents] = useState<Event[]>([]);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
   const [typeFilter, setTypeFilter] = useState('');
+  const [deviceFilter, setDeviceFilter] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
@@ -244,11 +293,11 @@ function EventsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: stri
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'delete_selected' | 'clear_all' | null>(null);
 
-  const load = useCallback(async (newOffset: number, newType: string) => {
+  const load = useCallback(async (newOffset: number, newType: string, newDevice: string) => {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await getEvents(PAGE_SIZE, newOffset, newType || undefined);
+      const data = await getEvents(PAGE_SIZE, newOffset, newType || undefined, newDevice || undefined);
       setEvents(data.events || []);
       setTotal(data.total || 0);
       setHasMore(data.has_more || false);
@@ -263,23 +312,30 @@ function EventsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: stri
 
   // 初始加载
   useEffect(() => {
-    load(0, typeFilter);
+    load(0, typeFilter, deviceFilter);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 切换类型筛选：重置到第 0 页，清空选择
   const handleTypeChange = (val: string) => {
     setTypeFilter(val);
     setSelectedIndices(new Set());
-    load(0, val);
+    load(0, val, deviceFilter);
+  };
+
+  // 切换设备筛选：重置到第 0 页，清空选择
+  const handleDeviceChange = (val: string) => {
+    setDeviceFilter(val);
+    setSelectedIndices(new Set());
+    load(0, typeFilter, val);
   };
 
   const handlePrev = () => {
     setSelectedIndices(new Set());
-    load(Math.max(0, offset - PAGE_SIZE), typeFilter);
+    load(Math.max(0, offset - PAGE_SIZE), typeFilter, deviceFilter);
   };
   const handleNext = () => {
     setSelectedIndices(new Set());
-    load(offset + PAGE_SIZE, typeFilter);
+    load(offset + PAGE_SIZE, typeFilter, deviceFilter);
   };
 
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
@@ -315,7 +371,7 @@ function EventsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: stri
         addToast('error', result.message || '删除失败');
       }
       setSelectedIndices(new Set());
-      await load(offset, typeFilter);
+      await load(offset, typeFilter, deviceFilter);
     } catch (err: unknown) {
       addToast('error', `删除失败：${err instanceof Error ? err.message : '未知错误'}`);
     } finally {
@@ -334,7 +390,7 @@ function EventsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: stri
         addToast('error', result.message || '清空失败');
       }
       setSelectedIndices(new Set());
-      await load(0, typeFilter);
+      await load(0, typeFilter, deviceFilter);
     } catch (err: unknown) {
       addToast('error', `清空失败：${err instanceof Error ? err.message : '未知错误'}`);
     } finally {
@@ -361,6 +417,9 @@ function EventsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: stri
             {opt.label}
           </button>
         ))}
+        <div className="flex-1" />
+        <span className="text-xs font-medium text-gray-400 tracking-wide">设备：</span>
+        <DeviceFilter devices={devices} value={deviceFilter} onChange={handleDeviceChange} />
       </div>
 
       {/* 批量操作栏（选中时显示） */}
@@ -412,7 +471,7 @@ function EventsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: stri
             >
               清空全部
             </button>
-            <Button variant="refresh" onClick={() => load(offset, typeFilter)} disabled={isLoading}>
+            <Button variant="refresh" onClick={() => load(offset, typeFilter, deviceFilter)} disabled={isLoading}>
               刷新
             </Button>
           </div>
@@ -432,7 +491,7 @@ function EventsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: stri
                 </svg>
               </div>
               <p className="text-red-600 text-sm mb-4">{error}</p>
-              <Button variant="secondary" onClick={() => load(offset, typeFilter)}>重试</Button>
+              <Button variant="secondary" onClick={() => load(offset, typeFilter, deviceFilter)}>重试</Button>
             </div>
           ) : events.length === 0 ? (
             <EmptyState
@@ -453,6 +512,7 @@ function EventsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: stri
                   selected={selectedIndices.has(idx)}
                   onToggleSelect={() => toggleSelect(idx)}
                   onClick={() => setSelectedEvent(event)}
+                  deviceNameMap={deviceNameMap}
                 />
               ))}
             </div>
@@ -487,7 +547,7 @@ function EventsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: stri
 
       {/* 事件详情弹窗 */}
       {selectedEvent && (
-        <EventDetailModal event={selectedEvent} onClose={() => setSelectedEvent(null)} />
+        <EventDetailModal event={selectedEvent} deviceNameMap={deviceNameMap} onClose={() => setSelectedEvent(null)} />
       )}
 
       {/* 确认弹窗 */}
@@ -515,9 +575,10 @@ interface EventRowProps {
   selected: boolean;
   onToggleSelect: () => void;
   onClick: () => void;
+  deviceNameMap: Map<string, string>;
 }
 
-function EventRow({ event, selected, onToggleSelect, onClick }: EventRowProps) {
+function EventRow({ event, selected, onToggleSelect, onClick, deviceNameMap }: EventRowProps) {
   return (
     <div
       onClick={onClick}
@@ -547,6 +608,7 @@ function EventRow({ event, selected, onToggleSelect, onClick }: EventRowProps) {
             <span className="flex-shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-700 border border-gray-200">
               {event.event_type}
             </span>
+            <DeviceTag jti={event.jti} deviceNameMap={deviceNameMap} />
           </div>
           <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1">
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -579,22 +641,23 @@ function EventRow({ event, selected, onToggleSelect, onClick }: EventRowProps) {
 
 // ─── 子组件：访问日志 Tab ──────────────────────────────────────────────────────
 
-function AccessLogsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: string) => void }) {
+function AccessLogsTab({ addToast, devices, deviceNameMap }: { addToast: (type: ToastItem['type'], msg: string) => void; devices: Device[]; deviceNameMap: Map<string, string> }) {
   const [logs, setLogs] = useState<AccessLog[]>([]);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
+  const [deviceFilter, setDeviceFilter] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'delete_selected' | 'clear_all' | null>(null);
 
-  const load = useCallback(async (newOffset: number) => {
+  const load = useCallback(async (newOffset: number, newDevice: string) => {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await getAccessLogs(PAGE_SIZE, newOffset);
+      const data = await getAccessLogs(PAGE_SIZE, newOffset, newDevice || undefined);
       setLogs(data.logs || []);
       setTotal(data.total || 0);
       setHasMore(data.has_more || false);
@@ -608,16 +671,22 @@ function AccessLogsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: 
   }, []);
 
   useEffect(() => {
-    load(0);
+    load(0, deviceFilter);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePrev = () => {
     setSelectedIds(new Set());
-    load(Math.max(0, offset - PAGE_SIZE));
+    load(Math.max(0, offset - PAGE_SIZE), deviceFilter);
   };
   const handleNext = () => {
     setSelectedIds(new Set());
-    load(offset + PAGE_SIZE);
+    load(offset + PAGE_SIZE, deviceFilter);
+  };
+
+  const handleDeviceChange = (val: string) => {
+    setDeviceFilter(val);
+    setSelectedIds(new Set());
+    load(0, val);
   };
 
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
@@ -652,7 +721,7 @@ function AccessLogsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: 
         addToast('error', result.message || '删除失败');
       }
       setSelectedIds(new Set());
-      await load(offset);
+      await load(offset, deviceFilter);
     } catch (err: unknown) {
       addToast('error', `删除失败：${err instanceof Error ? err.message : '未知错误'}`);
     } finally {
@@ -671,7 +740,7 @@ function AccessLogsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: 
         addToast('error', result.message || '清空失败');
       }
       setSelectedIds(new Set());
-      await load(0);
+      await load(0, deviceFilter);
     } catch (err: unknown) {
       addToast('error', `清空失败：${err instanceof Error ? err.message : '未知错误'}`);
     } finally {
@@ -682,6 +751,12 @@ function AccessLogsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: 
 
   return (
     <div className="space-y-4">
+      {/* 设备筛选栏 */}
+      <div className="flex flex-wrap items-center gap-2 bg-white/60 backdrop-blur-sm rounded-xl px-4 py-3 border border-gray-100 shadow-sm">
+        <span className="text-xs font-medium text-gray-400 mr-1 tracking-wide">设备筛选：</span>
+        <DeviceFilter devices={devices} value={deviceFilter} onChange={handleDeviceChange} />
+      </div>
+
       {/* 批量操作栏（选中时显示） */}
       {selectedIds.size > 0 && (
         <div className="flex items-center gap-3 bg-violet-50 backdrop-blur-sm rounded-xl px-4 py-3 border border-violet-200">
@@ -730,7 +805,7 @@ function AccessLogsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: 
             >
               清空全部
             </button>
-            <Button variant="refresh" onClick={() => load(offset)} disabled={isLoading}>
+            <Button variant="refresh" onClick={() => load(offset, deviceFilter)} disabled={isLoading}>
               刷新
             </Button>
           </div>
@@ -750,7 +825,7 @@ function AccessLogsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: 
                 </svg>
               </div>
               <p className="text-red-600 text-sm mb-4">{error}</p>
-              <Button variant="secondary" onClick={() => load(offset)}>重试</Button>
+              <Button variant="secondary" onClick={() => load(offset, deviceFilter)}>重试</Button>
             </div>
           ) : logs.length === 0 ? (
             <EmptyState
@@ -770,6 +845,7 @@ function AccessLogsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: 
                   log={log}
                   selected={selectedIds.has(log.id)}
                   onToggleSelect={() => toggleSelect(log.id)}
+                  deviceNameMap={deviceNameMap}
                 />
               ))}
             </div>
@@ -822,7 +898,7 @@ function AccessLogsTab({ addToast }: { addToast: (type: ToastItem['type'], msg: 
 
 // ─── 子组件：单条访问日志行 ────────────────────────────────────────────────────
 
-function AccessLogRow({ log, selected, onToggleSelect }: { log: AccessLog; selected: boolean; onToggleSelect: () => void }) {
+function AccessLogRow({ log, selected, onToggleSelect, deviceNameMap }: { log: AccessLog; selected: boolean; onToggleSelect: () => void; deviceNameMap: Map<string, string> }) {
   const indicatorColor =
     log.result === 'allowed'
       ? 'bg-emerald-400'
@@ -861,6 +937,7 @@ function AccessLogRow({ log, selected, onToggleSelect }: { log: AccessLog; selec
             </span>
           )}
           <StatusBadge status={log.result} />
+          <DeviceTag jti={log.jti} deviceNameMap={deviceNameMap} />
         </div>
 
         {/* 第二行：reason + UA */}
@@ -896,6 +973,17 @@ type TabKey = 'events' | 'access-logs';
 export default function EventsPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('events');
   const { toasts, addToast, removeToast } = useToast();
+  const [devices, setDevices] = useState<Device[]>([]);
+
+  useEffect(() => {
+    getDevices().then(setDevices).catch(() => { /* 设备列表加载失败不阻断日志查看 */ });
+  }, []);
+
+  const deviceNameMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const d of devices) m.set(d.jti, d.device_name);
+    return m;
+  }, [devices]);
 
   const tabs: { key: TabKey; label: string; icon: React.ReactNode }[] = [
     {
@@ -947,7 +1035,7 @@ export default function EventsPage() {
       </div>
 
       {/* Tab 内容 */}
-      {activeTab === 'events' ? <EventsTab addToast={addToast} /> : <AccessLogsTab addToast={addToast} />}
+      {activeTab === 'events' ? <EventsTab addToast={addToast} devices={devices} deviceNameMap={deviceNameMap} /> : <AccessLogsTab addToast={addToast} devices={devices} deviceNameMap={deviceNameMap} />}
 
       {/* Toast 通知 */}
       <ToastContainer toasts={toasts} onRemove={removeToast} />

@@ -44,6 +44,7 @@ export async function onRequestGet(context) {
     const limit = parseInt(url.searchParams.get('limit') || '20');
     const offset = parseInt(url.searchParams.get('offset') || '0');
     const typeFilter = url.searchParams.get('type') || null;
+    const deviceFilter = url.searchParams.get('device') || null;
 
     // 验证参数
     if (limit < 1 || limit > 100) {
@@ -60,20 +61,11 @@ export async function onRequestGet(context) {
       }, 400);
     }
 
-    // 获取事件
-    const result = await getEvents(resolveKv(env), userId, limit, offset);
-
-    // 如果指定了类型过滤
-    if (typeFilter) {
-      const filteredEvents = result.events.filter(e => e.event_type === typeFilter);
-      return jsonResponse({
-        success: true,
-        events: filteredEvents,
-        total: filteredEvents.length,
-        has_more: false,
-        filter: { type: typeFilter }
-      });
-    }
+    // 获取事件：type/device 过滤在 getEvents 内部基于全量完成，分页基于过滤后集合
+    const filter = {};
+    if (typeFilter) filter.type = typeFilter;
+    if (deviceFilter) filter.device = deviceFilter;
+    const result = await getEvents(resolveKv(env), userId, limit, offset, filter);
 
     return jsonResponse({
       success: true,

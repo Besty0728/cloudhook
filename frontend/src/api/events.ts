@@ -17,11 +17,15 @@ import { EventsResponse, DeleteResponse } from '@/types/api';
 export async function getEvents(
   limit = 20,
   offset = 0,
-  type?: string
+  type?: string,
+  device?: string
 ): Promise<EventsResponse> {
   const params: Record<string, unknown> = { limit, offset };
   if (type) {
     params.type = type;
+  }
+  if (device) {
+    params.device = device;
   }
 
   const response = await apiClient.get<EventsResponse>('/api/events', { params });

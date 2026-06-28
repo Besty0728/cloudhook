@@ -251,11 +251,13 @@ export async function logEvent(kv, userId, event) {
   } catch { /* silent */ }
 }
 
-export async function getEvents(kv, userId, limit = 20, offset = 0) {
+export async function getEvents(kv, userId, limit = 20, offset = 0, filter = {}) {
   try {
     const key = `user_${userId}_events`;
     const json = await kv.get(key);
-    const events = json ? JSON.parse(json) : [];
+    let events = json ? JSON.parse(json) : [];
+    if (filter.type) events = events.filter(e => e.event_type === filter.type);
+    if (filter.device) events = events.filter(e => e.jti === filter.device);
     return { events: events.slice(offset, offset + limit), total: events.length, has_more: offset + limit < events.length };
   } catch { return { events: [], total: 0, has_more: false }; }
 }
@@ -348,11 +350,12 @@ export async function writeAccessLog(kv, uid, log) {
   } catch { /* silent */ }
 }
 
-export async function getAccessLogs(kv, uid, limit = 20, offset = 0) {
+export async function getAccessLogs(kv, uid, limit = 20, offset = 0, filter = {}) {
   try {
     const key = `user_${uid}_accesslog`;
     const json = await kv.get(key);
-    const logs = json ? JSON.parse(json) : [];
+    let logs = json ? JSON.parse(json) : [];
+    if (filter.device) logs = logs.filter(l => l.jti === filter.device);
     return { logs: logs.slice(offset, offset + limit), total: logs.length, has_more: offset + limit < logs.length };
   } catch { return { logs: [], total: 0, has_more: false }; }
 }

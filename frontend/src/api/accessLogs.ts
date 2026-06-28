@@ -15,10 +15,15 @@ import { AccessLogsResponse, DeleteResponse } from '@/types/api';
  */
 export async function getAccessLogs(
   limit = 20,
-  offset = 0
+  offset = 0,
+  device?: string
 ): Promise<AccessLogsResponse> {
+  const params: Record<string, unknown> = { limit, offset };
+  if (device) {
+    params.device = device;
+  }
   const response = await apiClient.get<AccessLogsResponse>('/api/access-logs', {
-    params: { limit, offset },
+    params,
   });
   return response.data;
 }

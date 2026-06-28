@@ -39,6 +39,7 @@ export async function onRequestGet(context) {
     const url = new URL(request.url);
     const limit = parseInt(url.searchParams.get('limit') || '20');
     const offset = parseInt(url.searchParams.get('offset') || '0');
+    const deviceFilter = url.searchParams.get('device') || null;
 
     if (isNaN(limit) || limit < 1 || limit > 200) {
       return jsonResponse({
@@ -54,7 +55,8 @@ export async function onRequestGet(context) {
       }, 400);
     }
 
-    const result = await getAccessLogs(resolveKv(env), userId, limit, offset);
+    const filter = deviceFilter ? { device: deviceFilter } : {};
+    const result = await getAccessLogs(resolveKv(env), userId, limit, offset, filter);
 
     return jsonResponse({
       success: true,
