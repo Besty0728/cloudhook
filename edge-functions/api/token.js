@@ -119,7 +119,20 @@ export async function onRequestPost(context) {
 
     // 先构建 payload 拿到 iat/exp，再签名；iat/exp 入库供「揭示 token」确定性重算
     var payloadOpts = { deviceName, jti };
-    if (ttl !== undefined) payloadOpts.ttlSeconds = Number(ttl);
+    if (existing) {
+      // 复用已有设备：沿用原 iat/exp，避免登录覆盖用户已设的有效期（如永久 token）。
+      // 与「揭示 token」逻辑一致，使 token 明文复现（密钥不变）。
+      // 仅当 exp 为永久(0)或未过期时沿用；过期/缺失的老设备走默认 30 天重新签发。
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (existing.exp === 0 || (existing.exp > 0 && existing.exp > nowSec)) {
+        payloadOpts.iat = existing.iat
+          || (existing.created_at ? Math.floor(new Date(existing.created_at).getTime() / 1000) : nowSec);
+        payloadOpts.exp = existing.exp;
+      }
+    } else if (ttl !== undefined) {
+      // 首次登录且前端指定了 ttl
+      payloadOpts.ttlSeconds = Number(ttl);
+    }
     const payload = buildTokenPayload(userId, payloadOpts);
     const token = await signTokenPayload(payload, env.HMAC_SECRET);
 
