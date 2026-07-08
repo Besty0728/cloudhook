@@ -248,6 +248,11 @@ export async function logEvent(kv, userId, event) {
     events.unshift(event);
     if (events.length > EVENT_LOG_CAP) events.length = EVENT_LOG_CAP;
     await kv.put(key, JSON.stringify(events));
+    // 累计接收计数：独立于滚动窗口，清空/删除日志不回退
+    const countKey = `user_${userId}_event_count`;
+    const countStr = await kv.get(countKey);
+    const count = countStr ? parseInt(countStr) : 0;
+    await kv.put(countKey, String((Number.isFinite(count) ? count : 0) + 1));
   } catch { /* silent */ }
 }
 
@@ -258,8 +263,20 @@ export async function getEvents(kv, userId, limit = 20, offset = 0, filter = {})
     let events = json ? JSON.parse(json) : [];
     if (filter.type) events = events.filter(e => e.event_type === filter.type);
     if (filter.device) events = events.filter(e => e.jti === filter.device);
-    return { events: events.slice(offset, offset + limit), total: events.length, has_more: offset + limit < events.length };
-  } catch { return { events: [], total: 0, has_more: false }; }
+    // total_received：历史累计接收数（计数器缺失时用当前日志长度兜底）
+    let totalReceived = events.length;
+    try {
+      const countStr = await kv.get(`user_${userId}_event_count`);
+      const count = countStr ? parseInt(countStr) : 0;
+      if (Number.isFinite(count) && count > totalReceived) totalReceived = count;
+    } catch { /* 兜底已就绪 */ }
+    return {
+      events: events.slice(offset, offset + limit),
+      total: events.length,
+      total_received: totalReceived,
+      has_more: offset + limit < events.length
+    };
+  } catch { return { events: [], total: 0, total_received: 0, has_more: false }; }
 }
 
 export async function checkRateLimit(kv, userId, endpoint, limit = 100) {
@@ -583,7 +600,13 @@ export function classify(parsed) {
     for (const kw of PERM_KW_ZH) if (t.includes(kw)) return 'permission_required';
     return 'attention_required';
   }
-  if (eventName === 'Stop') return 'task_done';
+  if (eventName === 'Stop') {
+    // Claude Code v2.1.145+：background_tasks 非空 = 本轮结束但仍有后台任务（subagent 等），
+    // 不是任务真正完成；字段缺失（旧版本）时保持 task_done 兼容
+    const bg = parsed.raw_event && parsed.raw_event.background_tasks;
+    if (Array.isArray(bg) && bg.length > 0) return 'turn_paused';
+    return 'task_done';
+  }
   return 'info';
 }
 
@@ -594,13 +617,15 @@ export function classify(parsed) {
 const TITLE_MAP = {
   'permission_required': 'Claude Code 需要权限',
   'attention_required': 'Claude Code 需要你',
-  'task_done': 'Claude Code 已完成'
+  'task_done': 'Claude Code 已完成',
+  'turn_paused': 'Claude Code 本轮结束'
 };
 
 const RISK_MAP = {
   'permission_required': 'high',
   'attention_required': 'medium',
   'task_done': 'low',
+  'turn_paused': 'low',
   'info': 'low'
 };
 
@@ -687,7 +712,14 @@ export function buildMessage(eventType, parsed = null, _d1 = null, _d2 = null, _
       break;
     }
     case 'task_done': {
-      body = userName ? `${userName}，${device} 上的 Claude Code 已经完成了该轮任务` : `${device} 上的 Claude Code 已经完成了该轮任务`;
+      body = userName ? `${userName}，${device} 上的 Claude Code 已经完成了任务` : `${device} 上的 Claude Code 已经完成了任务`;
+      break;
+    }
+    case 'turn_paused': {
+      const bg = parsed?.raw_event?.background_tasks;
+      const n = Array.isArray(bg) ? bg.length : 0;
+      const suffix = n > 0 ? `本轮结束，仍有 ${n} 个后台任务运行中` : '本轮结束，后台任务运行中';
+      body = userName ? `${userName}，${device} 上的 Claude Code ${suffix}` : `${device} 上的 Claude Code ${suffix}`;
       break;
     }
     default:

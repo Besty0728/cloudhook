@@ -130,7 +130,10 @@ export interface ApiResponse<T = unknown> {
 export interface EventsResponse {
   success?: boolean;
   events: Event[];
+  /** 当前保留日志条数（滚动窗口，上限 100），用于分页 */
   total: number;
+  /** 历史累计接收事件数，清空日志不回退 */
+  total_received?: number;
   has_more: boolean;
 }
 

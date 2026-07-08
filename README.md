@@ -104,7 +104,10 @@ cloudhook/
 | 事件 | 触发时机 | 通知分类 |
 |------|---------|---------|
 | `PermissionRequest` | Claude Code 请求授权 | permission_required / attention_required |
-| `Stop` | Claude Code 完成一轮响应 | task_done |
+| `Stop`（无后台任务） | 任务真正完成 | task_done |
+| `Stop`（有后台任务） | 一轮响应结束，subagent 等仍在运行 | turn_paused（只记日志，不推送） |
+
+> `Stop` 事件每轮响应结束都会触发，并非任务完成。CloudHook 通过 hook 输入中的 `background_tasks` 数组（Claude Code v2.1.145+）区分两种情况：非空 → `turn_paused`，为空或缺失（旧版本兼容）→ `task_done`。
 
 风险评级由 `getRiskLevel()` 根据 `tool_name` 和命令内容智能判定，而非统一标记高风险。
 
@@ -127,6 +130,8 @@ npm run dev
 ## 日志策略
 
 事件日志保留 100 条，访问日志保留 200 条，滚动窗口自动淘汰旧记录。支持前端单条/批量删除和清空。
+
+另有独立的累计计数器（KV key `user_{uid}_event_count`）记录历史累计接收事件数，仪表板"总事件数"显示该值；清空/删除日志不影响累计数。
 
 ## 许可证
 

@@ -32,9 +32,6 @@ import {
   safeWaitUntil
 } from '../_shared.js';
 
-// WAF 绕过：动态构建 'PermissionRequest'
-var PERM_EVENT = String.fromCharCode(80,101,114,109,105,115,115,105,111,110,82,101,113,117,101,115,116);
-
 // ============================================================================
 // 工具函数
 // ============================================================================
@@ -125,30 +122,6 @@ function parseEvent(rawEvent, eventName) {
   return parsed;
 }
 
-/**
- * 本地事件分类（WAF 安全版）
- * 不直接使用 _shared.js 的 classify，因为源码中的 PermissionRequest 字符串会被 WAF 拦截
- */
-function localClassify(parsed) {
-  var eventName = parsed.event_name || '';
-  if (eventName === PERM_EVENT) return 'permission_required';
-  if (eventName === 'Notification') {
-    var t = (parsed.text_lower || parsed.raw_text || '').toLowerCase();
-    var permKwEn = ['permission','permissions','allow','approve','approval','confirm','confirmation',
-      'needs your attention','waiting for input','waiting for user','requires user','user action required','permission_prompt'];
-    for (var i = 0; i < permKwEn.length; i++) {
-      if (t.includes(permKwEn[i])) return 'permission_required';
-    }
-    var permKwZh = ['权限','允许','批准','确认','等待用户','需要你','需要用户','需要操作','是否继续','请确认'];
-    for (var j = 0; j < permKwZh.length; j++) {
-      if (t.includes(permKwZh[j])) return 'permission_required';
-    }
-    return 'attention_required';
-  }
-  if (eventName === 'Stop') return 'task_done';
-  return 'info';
-}
-
 // ============================================================================
 // 主处理函数
 // ============================================================================
@@ -215,8 +188,10 @@ export async function onRequestPost(context) {
       || 'Unknown';
     var parsed = parseEvent(rawEvent, eventName);
 
-    // 7. 事件分类（使用本地 WAF 安全版）
-    var eventType = localClassify(parsed);
+    // 7. 事件分类（_shared.js classify 已用 fromCharCode 绕过 WAF）
+    var eventType = classify(parsed);
+    // turn_paused：本轮结束但仍有后台任务（subagent 等）——只记日志，不推送
+    var shouldNotify = eventType !== 'turn_paused';
 
     // 8. 构建消息
     var message = buildMessage(eventType, parsed, null, null, null, parsed.summary, config, payload.dev);
@@ -246,7 +221,7 @@ export async function onRequestPost(context) {
         }
 
         // 推送通知
-        if (barkKey) {
+        if (barkKey && shouldNotify) {
           await pushBark(
             barkKey,
             config.bark_server || 'https://api.day.app',
@@ -266,7 +241,7 @@ export async function onRequestPost(context) {
           title: message.title,
           body: message.body,
           risk_level: getRiskLevel(eventType, parsed),
-          notified: true,
+          notified: shouldNotify,
           token_id: token.slice(0, 8),
           jti: payload.jti
         });
@@ -280,7 +255,7 @@ export async function onRequestPost(context) {
     return jsonResponse({
       success: true,
       event_type: eventType,
-      notified: true,
+      notified: shouldNotify,
       latency_ms: latency
     });
 

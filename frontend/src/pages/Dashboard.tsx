@@ -23,7 +23,8 @@ export default function Dashboard() {
       setIsLoading(true);
       const data = await getEvents(10, 0);
       setEvents(data.events || []);
-      setTotal(data.total || 0);
+      // 累计接收数（旧后端无此字段时退回滚动窗口条数）
+      setTotal(data.total_received ?? data.total ?? 0);
     } catch (err: any) {
       console.error('Failed to load events:', err);
       setError(err.message || '加载失败');

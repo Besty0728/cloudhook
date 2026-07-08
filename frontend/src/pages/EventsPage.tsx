@@ -23,6 +23,7 @@ const EVENT_TYPE_OPTIONS: { label: string; value: string }[] = [
   { label: '需要权限', value: 'permission_required' },
   { label: '需要关注', value: 'attention_required' },
   { label: '任务完成', value: 'task_done' },
+  { label: '轮次结束', value: 'turn_paused' },
   { label: '信息', value: 'info' },
 ];
 
