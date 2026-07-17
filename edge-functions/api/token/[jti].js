@@ -5,7 +5,7 @@
  * PATCH  /api/token/{jti} - 重命名设备（仅 token）或修改有效期（需 token + 密码）
  */
 
-import { verifyAuthToken, verifyPasswordHash, buildTokenPayload, signTokenPayload, revokeToken, removeDevice, getDevices, resolveKv, renameDevice } from '../../_shared.js';
+import { verifyPasswordHash, buildTokenPayload, signTokenPayload, revokeToken, removeDevice, getDevices, resolveKv, renameDevice, requireAuth } from '../../_shared.js';
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -35,16 +35,12 @@ export async function onRequestDelete(context) {
       }, 401);
     }
 
-    // Token 验证
-    const token = request.headers.get('X-CloudHook-Token');
-    if (!token) {
-      return jsonResponse({ error: 'Missing token' }, 401);
+    // 统一鉴权：签名验证 + 吊销名单检查（管理端点 fail-closed）
+    const auth = await requireAuth(request, env);
+    if (!auth.ok) {
+      return jsonResponse({ error: auth.error }, auth.status);
     }
-
-    const userId = await verifyAuthToken(token, env.HMAC_SECRET);
-    if (!userId) {
-      return jsonResponse({ error: 'Invalid token' }, 401);
-    }
+    const userId = auth.payload.uid;
 
     // 取出要撤销的目标 jti（动态路由参数）
     const targetJti = params?.jti;
@@ -113,16 +109,12 @@ export async function onRequestGet(context) {
       }, 401);
     }
 
-    // Token 验证
-    const token = request.headers.get('X-CloudHook-Token');
-    if (!token) {
-      return jsonResponse({ error: 'Missing token' }, 401);
+    // 统一鉴权：签名验证 + 吊销名单检查（管理端点 fail-closed）
+    const auth = await requireAuth(request, env);
+    if (!auth.ok) {
+      return jsonResponse({ error: auth.error }, auth.status);
     }
-
-    const userId = await verifyAuthToken(token, env.HMAC_SECRET);
-    if (!userId) {
-      return jsonResponse({ error: 'Invalid token' }, 401);
-    }
+    const userId = auth.payload.uid;
 
     const targetJti = params?.jti;
     if (!targetJti) {
@@ -187,16 +179,12 @@ export async function onRequestPatch(context) {
   const { request, env, params } = context;
 
   try {
-    // Token 验证
-    const token = request.headers.get('X-CloudHook-Token');
-    if (!token) {
-      return jsonResponse({ error: 'Missing token' }, 401);
+    // 统一鉴权：签名验证 + 吊销名单检查（管理端点 fail-closed）
+    const auth = await requireAuth(request, env);
+    if (!auth.ok) {
+      return jsonResponse({ error: auth.error }, auth.status);
     }
-
-    const userId = await verifyAuthToken(token, env.HMAC_SECRET);
-    if (!userId) {
-      return jsonResponse({ error: 'Invalid token' }, 401);
-    }
+    const userId = auth.payload.uid;
 
     const targetJti = params?.jti;
     if (!targetJti) {

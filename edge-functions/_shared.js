@@ -183,6 +183,32 @@ export function generateSecureRandom(length = 32) {
   return arrayBufferToHex(crypto.getRandomValues(new Uint8Array(length)));
 }
 
+/**
+ * 统一请求鉴权：签名/有效期验证 + 吊销名单检查。
+ * 所有管理端点（token/config/events/access-logs）应使用此函数替代裸 verifyAuthToken，
+ * 否则被撤销的 token 仍能访问管理 API。
+ *
+ * 返回 { ok:true, payload, kv } 或 { ok:false, status, error }；
+ * 调用方用各自文件的 jsonResponse 构造错误响应：
+ *   const auth = await requireAuth(request, env);
+ *   if (!auth.ok) return jsonResponse({ error: auth.error }, auth.status);
+ *
+ * options.strict（默认 true）：吊销名单不可读（KV 未绑定/异常）时 fail-closed 返回 503。
+ * 安全优先——无法确认吊销状态的管理操作不应放行。hook 通知链路不走此函数，保持 fail-open。
+ */
+export async function requireAuth(request, env, options = {}) {
+  const strict = options.strict !== false;
+  const token = request.headers.get('X-CloudHook-Token');
+  if (!token) return { ok: false, status: 401, error: 'Missing token' };
+  const payload = await verifyAuthToken(token, env.HMAC_SECRET, { full: true });
+  if (!payload) return { ok: false, status: 401, error: 'Invalid token' };
+  const kv = resolveKv(env);
+  const { revoked, kvError } = await isTokenRevoked(kv, payload.jti);
+  if (revoked) return { ok: false, status: 401, error: 'Token revoked' };
+  if (kvError && strict) return { ok: false, status: 503, error: 'Auth store unavailable' };
+  return { ok: true, payload, kv };
+}
+
 // ============================================================================
 // kv-store — KV 存储操作
 // ============================================================================
@@ -341,17 +367,35 @@ export async function removeDevice(kv, uid, jti) {
   } catch { /* silent */ }
 }
 
-export async function revokeToken(kv, jti, ttlSeconds) {
-  const ttl = Math.max(60, Math.floor(ttlSeconds || 60));
-  await kv.put(`revoked_${jti}`, '1', { expirationTtl: ttl });
+/**
+ * 吊销名单 KV key。EdgeOne KV key 仅允许字母/数字/下划线：
+ * jti 是带连字符的 UUID，统一剥离非法字符，写入与读取共用此函数保证一致。
+ * （旧的带连字符 key 成为孤儿，随 TTL 自然过期，无需迁移）
+ */
+function revokedKey(jti) {
+  return `revoked_${String(jti).replace(/[^A-Za-z0-9_]/g, '')}`;
 }
 
+export async function revokeToken(kv, jti, ttlSeconds) {
+  const ttl = Math.max(60, Math.floor(ttlSeconds || 60));
+  await kv.put(revokedKey(jti), '1', { expirationTtl: ttl });
+}
+
+/**
+ * 检查 Token 是否被撤销。
+ * 返回 { revoked, kvError }：区分「未撤销」与「吊销名单不可读」，
+ * 由调用方决定 KV 异常时放行（hook 通知链路）还是拒绝（管理端点）。
+ */
 export async function isTokenRevoked(kv, jti) {
+  if (!jti) return { revoked: false, kvError: false };
+  if (!kv) return { revoked: false, kvError: true };
   try {
-    if (!jti) return false;
-    const val = await kv.get(`revoked_${jti}`);
-    return val !== null && val !== undefined;
-  } catch { return false; }
+    const val = await kv.get(revokedKey(jti));
+    return { revoked: val !== null && val !== undefined, kvError: false };
+  } catch (error) {
+    console.error('[CloudHook] Revocation check failed:', error);
+    return { revoked: false, kvError: true };
+  }
 }
 
 export async function writeAccessLog(kv, uid, log) {

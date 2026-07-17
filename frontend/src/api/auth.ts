@@ -4,13 +4,14 @@
 
 import { apiClient } from './client';
 import { ApiResponse } from '@/types/api';
-import { getDeviceFingerprint } from '@/utils/deviceId';
+import { getDeviceFingerprint, getLegacyDeviceFingerprint } from '@/utils/deviceId';
 
 export interface LoginRequest {
   device_name: string;
   master_password: string;
   user_id?: string;
   device_fingerprint?: string;
+  legacy_fingerprint?: string;
 }
 
 export interface LoginResponse {
@@ -31,7 +32,8 @@ export async function login(
     device_name: 'Web',
     master_password: masterPassword,
     user_id: 'default', // 单用户模式
-    device_fingerprint: getDeviceFingerprint(), // 设备指纹，后端据此去重避免重复创建
+    device_fingerprint: await getDeviceFingerprint(), // 机器级指纹（跨浏览器稳定），后端据此去重避免重复创建
+    legacy_fingerprint: getLegacyDeviceFingerprint(), // 旧版 UUID 指纹（如存在），供后端迁移期匹配复用原设备
   });
   return response.data;
 }

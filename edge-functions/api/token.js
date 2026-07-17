@@ -3,7 +3,7 @@
  * 登录签发无状态 Token（自验证，不依赖 KV）
  */
 
-import { buildTokenPayload, signTokenPayload, verifyAuthToken, hashPassword, registerDevice, getDevices, resolveKv, findDeviceByFingerprint, renameDevice, getClientIp } from '../_shared.js';
+import { buildTokenPayload, signTokenPayload, hashPassword, registerDevice, getDevices, resolveKv, findDeviceByFingerprint, getClientIp, requireAuth } from '../_shared.js';
 
 // ============================================================================
 // 工具函数
@@ -67,7 +67,7 @@ export async function onRequestPost(context) {
 
   try {
     const body = await request.json();
-    const { device_name, master_password, device_fingerprint, ttl } = body;
+    const { device_name, master_password, device_fingerprint, legacy_fingerprint, ttl } = body;
 
     if (!master_password) {
       return jsonResponse({
@@ -108,9 +108,15 @@ export async function onRequestPost(context) {
 
     // 设备指纹去重：同一设备（指纹命中）复用既有 jti，避免反复登录堆积重复记录。
     // 命中时保留原 jti、created_at 与用户已重命名的 device_name，仅续期 iat/exp。
-    const existing = device_fingerprint
+    // 优先匹配新指纹（稳定属性哈希）；未命中且携带旧版 UUID 指纹时回退匹配——
+    // 迁移期兼容：命中旧指纹同样复用原设备，下方 registerDevice 会把指纹更新为
+    // 新哈希，此后任意浏览器登录都走新指纹命中这同一条记录。
+    let existing = device_fingerprint
       ? await findDeviceByFingerprint(kv, userId, device_fingerprint)
       : null;
+    if (!existing && legacy_fingerprint) {
+      existing = await findDeviceByFingerprint(kv, userId, legacy_fingerprint);
+    }
 
     const jti = existing?.jti || crypto.randomUUID();
     const createdAt = existing?.created_at || nowIso;
@@ -183,19 +189,15 @@ export async function onRequestGet(context) {
   const { request, env } = context;
 
   try {
-    const token = request.headers.get('X-CloudHook-Token');
-    if (!token) {
-      return jsonResponse({ error: 'Missing token' }, 401);
+    // 统一鉴权：签名验证 + 吊销名单检查（管理端点 fail-closed）
+    const auth = await requireAuth(request, env);
+    if (!auth.ok) {
+      return jsonResponse({ error: auth.error }, auth.status);
     }
-
-    // full 模式取出完整 payload（含 jti），用于标记 is_current
-    const payload = await verifyAuthToken(token, env.HMAC_SECRET, { full: true });
-    if (!payload) {
-      return jsonResponse({ error: 'Invalid token' }, 401);
-    }
+    const payload = auth.payload;
 
     const currentJti = payload.jti || null;
-    const rawDevices = await getDevices(resolveKv(env), payload.uid);
+    const rawDevices = await getDevices(auth.kv, payload.uid);
 
     const devices = rawDevices.map(d => ({
       jti: d.jti,

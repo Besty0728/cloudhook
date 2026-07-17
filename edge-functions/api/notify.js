@@ -146,7 +146,9 @@ export async function onRequestPost(context) {
 
     var kv = resolveKv(env);
 
-    if (await isTokenRevoked(kv, payload.jti)) {
+    // kvError 时放行：通知可用性优先，吊销名单不可读不应阻断告警推送（内部已记日志）
+    var revokeCheck = await isTokenRevoked(kv, payload.jti);
+    if (revokeCheck.revoked) {
       return jsonResponse({ success: false, error: 'Token revoked' });
     }
 

@@ -3,7 +3,7 @@
  * 查询用户的事件日志
  */
 
-import { verifyAuthToken, getEvents, deleteEvents, clearEvents, resolveKv } from '../_shared.js';
+import { requireAuth, getEvents, deleteEvents, clearEvents } from '../_shared.js';
 
 // ============================================================================
 // 工具函数
@@ -28,16 +28,12 @@ export async function onRequestGet(context) {
   const { request, env } = context;
 
   try {
-    // Token 验证
-    const token = request.headers.get('X-CloudHook-Token');
-    if (!token) {
-      return jsonResponse({ error: 'Missing token' }, 401);
+    // 统一鉴权：签名验证 + 吊销名单检查（管理端点 fail-closed）
+    const auth = await requireAuth(request, env);
+    if (!auth.ok) {
+      return jsonResponse({ error: auth.error }, auth.status);
     }
-
-    const userId = await verifyAuthToken(token, env.HMAC_SECRET);
-    if (!userId) {
-      return jsonResponse({ error: 'Invalid token' }, 401);
-    }
+    const userId = auth.payload.uid;
 
     // 解析查询参数
     const url = new URL(request.url);
@@ -65,7 +61,7 @@ export async function onRequestGet(context) {
     const filter = {};
     if (typeFilter) filter.type = typeFilter;
     if (deviceFilter) filter.device = deviceFilter;
-    const result = await getEvents(resolveKv(env), userId, limit, offset, filter);
+    const result = await getEvents(auth.kv, userId, limit, offset, filter);
 
     return jsonResponse({
       success: true,
@@ -89,18 +85,15 @@ export async function onRequestDelete(context) {
   const { request, env } = context;
 
   try {
-    const token = request.headers.get('X-CloudHook-Token');
-    if (!token) {
-      return jsonResponse({ error: 'Missing token' }, 401);
+    // 统一鉴权：签名验证 + 吊销名单检查（管理端点 fail-closed）
+    const auth = await requireAuth(request, env);
+    if (!auth.ok) {
+      return jsonResponse({ error: auth.error }, auth.status);
     }
-
-    const userId = await verifyAuthToken(token, env.HMAC_SECRET);
-    if (!userId) {
-      return jsonResponse({ error: 'Invalid token' }, 401);
-    }
+    const userId = auth.payload.uid;
 
     const body = await request.json();
-    const kv = resolveKv(env);
+    const kv = auth.kv;
 
     if (body.clear_all === true) {
       const result = await clearEvents(kv, userId);

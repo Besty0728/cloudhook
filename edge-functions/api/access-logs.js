@@ -3,7 +3,7 @@
  * GET /api/access-logs - 查询风控访问日志（分页）
  */
 
-import { verifyAuthToken, getAccessLogs, deleteAccessLogs, clearAccessLogs, resolveKv } from '../_shared.js';
+import { requireAuth, getAccessLogs, deleteAccessLogs, clearAccessLogs } from '../_shared.js';
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -24,16 +24,12 @@ export async function onRequestGet(context) {
   const { request, env } = context;
 
   try {
-    // Token 验证
-    const token = request.headers.get('X-CloudHook-Token');
-    if (!token) {
-      return jsonResponse({ error: 'Missing token' }, 401);
+    // 统一鉴权：签名验证 + 吊销名单检查（管理端点 fail-closed）
+    const auth = await requireAuth(request, env);
+    if (!auth.ok) {
+      return jsonResponse({ error: auth.error }, auth.status);
     }
-
-    const userId = await verifyAuthToken(token, env.HMAC_SECRET);
-    if (!userId) {
-      return jsonResponse({ error: 'Invalid token' }, 401);
-    }
+    const userId = auth.payload.uid;
 
     // 解析分页参数
     const url = new URL(request.url);
@@ -56,7 +52,7 @@ export async function onRequestGet(context) {
     }
 
     const filter = deviceFilter ? { device: deviceFilter } : {};
-    const result = await getAccessLogs(resolveKv(env), userId, limit, offset, filter);
+    const result = await getAccessLogs(auth.kv, userId, limit, offset, filter);
 
     return jsonResponse({
       success: true,
@@ -82,18 +78,15 @@ export async function onRequestDelete(context) {
   const { request, env } = context;
 
   try {
-    const token = request.headers.get('X-CloudHook-Token');
-    if (!token) {
-      return jsonResponse({ error: 'Missing token' }, 401);
+    // 统一鉴权：签名验证 + 吊销名单检查（管理端点 fail-closed）
+    const auth = await requireAuth(request, env);
+    if (!auth.ok) {
+      return jsonResponse({ error: auth.error }, auth.status);
     }
-
-    const userId = await verifyAuthToken(token, env.HMAC_SECRET);
-    if (!userId) {
-      return jsonResponse({ error: 'Invalid token' }, 401);
-    }
+    const userId = auth.payload.uid;
 
     const body = await request.json();
-    const kv = resolveKv(env);
+    const kv = auth.kv;
 
     if (body.clear_all === true) {
       const result = await clearAccessLogs(kv, userId);

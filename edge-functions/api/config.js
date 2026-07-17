@@ -3,7 +3,7 @@
  * 读取、更新用户配置，测试 Bark 推送
  */
 
-import { encrypt, decrypt, verifyPasswordHash, verifyAuthToken, getUserConfig, saveUserConfig, resolveKv } from '../_shared.js';
+import { encrypt, decrypt, verifyPasswordHash, requireAuth, getUserConfig, saveUserConfig } from '../_shared.js';
 
 // ============================================================================
 // 工具函数
@@ -36,19 +36,15 @@ export async function onRequestGet(context) {
   const { request, env } = context;
 
   try {
-    // Token 验证
-    const token = request.headers.get('X-CloudHook-Token');
-    if (!token) {
-      return jsonResponse({ error: 'Missing token' }, 401);
+    // 统一鉴权：签名验证 + 吊销名单检查（管理端点 fail-closed）
+    const auth = await requireAuth(request, env);
+    if (!auth.ok) {
+      return jsonResponse({ error: auth.error }, auth.status);
     }
-
-    const userId = await verifyAuthToken(token, env.HMAC_SECRET);
-    if (!userId) {
-      return jsonResponse({ error: 'Invalid token' }, 401);
-    }
+    const userId = auth.payload.uid;
 
     // 读取配置（传递 env 支持环境变量回退）
-    const config = await getUserConfig(resolveKv(env), userId, env);
+    const config = await getUserConfig(auth.kv, userId, env);
 
     // 解密 Bark Key（如果存储的是加密版本）
     let barkKey = config.bark_key;
@@ -100,22 +96,18 @@ export async function onRequestPut(context) {
       }, 401);
     }
 
-    // Token 验证
-    const token = request.headers.get('X-CloudHook-Token');
-    if (!token) {
-      return jsonResponse({ error: 'Missing token' }, 401);
+    // 统一鉴权：签名验证 + 吊销名单检查（管理端点 fail-closed）
+    const auth = await requireAuth(request, env);
+    if (!auth.ok) {
+      return jsonResponse({ error: auth.error }, auth.status);
     }
-
-    const userId = await verifyAuthToken(token, env.HMAC_SECRET);
-    if (!userId) {
-      return jsonResponse({ error: 'Invalid token' }, 401);
-    }
+    const userId = auth.payload.uid;
 
     // 解析请求体
     const updates = await request.json();
 
     // 读取当前配置（传递 env 支持环境变量回退）
-    const kv = resolveKv(env);
+    const kv = auth.kv;
     const currentConfig = await getUserConfig(kv, userId, env);
 
     // 合并配置

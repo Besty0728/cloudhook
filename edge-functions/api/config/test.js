@@ -6,7 +6,7 @@
  * 必须有独立文件 config/test.js，不能塞进 config.js（后者只匹配 /api/config）。
  */
 
-import { decrypt, verifyAuthToken, testBarkPush, getUserConfig, resolveKv } from '../../_shared.js';
+import { decrypt, requireAuth, testBarkPush, getUserConfig } from '../../_shared.js';
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -39,19 +39,15 @@ export async function onRequestPost(context) {
   const { request, env } = context;
 
   try {
-    // Token 验证
-    const token = request.headers.get('X-CloudHook-Token');
-    if (!token) {
-      return jsonResponse({ error: 'Missing token' }, 401);
+    // 统一鉴权：签名验证 + 吊销名单检查（管理端点 fail-closed）
+    const auth = await requireAuth(request, env);
+    if (!auth.ok) {
+      return jsonResponse({ error: auth.error }, auth.status);
     }
-
-    const userId = await verifyAuthToken(token, env.HMAC_SECRET);
-    if (!userId) {
-      return jsonResponse({ error: 'Invalid token' }, 401);
-    }
+    const userId = auth.payload.uid;
 
     // 读取配置（传递 env 支持环境变量回退）
-    const config = await getUserConfig(resolveKv(env), userId, env);
+    const config = await getUserConfig(auth.kv, userId, env);
 
     // 解密 Bark Key（如果存储的是加密版本）
     let barkKey = config.bark_key;
