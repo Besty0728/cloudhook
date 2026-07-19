@@ -3,7 +3,7 @@
  * 登录签发无状态 Token（自验证，不依赖 KV）
  */
 
-import { buildTokenPayload, signTokenPayload, hashPassword, registerDevice, getDevices, resolveKv, findDeviceByFingerprint, getClientIp, requireAuth } from '../_shared.js';
+import { buildTokenPayload, signTokenPayload, hashPassword, registerDevice, getDevices, resolveKv, isTokenRevoked, getClientIp, requireAuth } from '../_shared.js';
 
 // ============================================================================
 // 工具函数
@@ -67,7 +67,7 @@ export async function onRequestPost(context) {
 
   try {
     const body = await request.json();
-    const { device_name, master_password, device_fingerprint, legacy_fingerprint, ttl } = body;
+    const { device_name, master_password, previous_jti, device_fingerprint, legacy_fingerprints, legacy_fingerprint, ttl } = body;
 
     if (!master_password) {
       return jsonResponse({
@@ -106,16 +106,36 @@ export async function onRequestPost(context) {
     const clientIp = getClientIp(request);
     const nowIso = new Date().toISOString();
 
-    // 设备指纹去重：同一设备（指纹命中）复用既有 jti，避免反复登录堆积重复记录。
-    // 命中时保留原 jti、created_at 与用户已重命名的 device_name，仅续期 iat/exp。
-    // 优先匹配新指纹（稳定属性哈希）；未命中且携带旧版 UUID 指纹时回退匹配——
-    // 迁移期兼容：命中旧指纹同样复用原设备，下方 registerDevice 会把指纹更新为
-    // 新哈希，此后任意浏览器登录都走新指纹命中这同一条记录。
-    let existing = device_fingerprint
-      ? await findDeviceByFingerprint(kv, userId, device_fingerprint)
-      : null;
-    if (!existing && legacy_fingerprint) {
-      existing = await findDeviceByFingerprint(kv, userId, legacy_fingerprint);
+    // 设备身份续接，按可靠性降序匹配既有记录（命中即复用 jti，避免重复建档）：
+    // 1) previous_jti —— 本浏览器上次登录绑定的设备。与指纹无关，同浏览器重登
+    //    100% 续接（指纹漂移免疫）。jti 非秘密，主密码已在上方验证过，可信。
+    //    被吊销的 jti 不复用：吊销 = 显式杀死该设备身份，不允许借登录复活。
+    // 2) device_fingerprint（v2）—— 跨浏览器稳定的机器指纹，同机新浏览器归并。
+    // 3) legacy_fingerprints —— 历史指纹（v1 属性哈希 / 旧版随机 UUID），仅迁移期
+    //    兜底；兼容旧前端的单值 legacy_fingerprint 字段。
+    // 命中任意一层后，下方 registerDevice 都会把记录指纹升级为当前 v2 值（自愈），
+    // 此后任何浏览器登录都能走第 1/2 层命中同一条记录。
+    const devices = await getDevices(kv, userId);
+    let existing = null;
+    if (typeof previous_jti === 'string' && previous_jti && previous_jti.length <= 100) {
+      const hit = devices.find(d => d.jti === previous_jti) || null;
+      if (hit) {
+        const { revoked } = await isTokenRevoked(kv, previous_jti);
+        if (!revoked) existing = hit;
+      }
+    }
+    if (!existing && device_fingerprint) {
+      existing = devices.find(d => d.fingerprint === device_fingerprint) || null;
+    }
+    if (!existing) {
+      const legacyCandidates = (Array.isArray(legacy_fingerprints) ? legacy_fingerprints : [])
+        .concat(legacy_fingerprint ? [legacy_fingerprint] : [])
+        .filter(fp => typeof fp === 'string' && fp)
+        .slice(0, 5);
+      for (const fp of legacyCandidates) {
+        existing = devices.find(d => d.fingerprint === fp) || null;
+        if (existing) break;
+      }
     }
 
     const jti = existing?.jti || crypto.randomUUID();

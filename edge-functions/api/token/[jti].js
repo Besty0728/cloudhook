@@ -48,9 +48,10 @@ export async function onRequestDelete(context) {
       return jsonResponse({ error: 'Missing jti', message: '缺少要撤销的设备标识' }, 400);
     }
 
-    // 计算撤销标记的 TTL：优先用设备的 exp 字段，永久 token 用 1 年兜底
+    // 计算撤销标记的 TTL：有时效 token 用剩余有效期；永久 token（exp=0）传 0，
+    // revokeToken 会写不设 TTL 的永久标记（标记到期消失 = 被撤销的永久 token 复活）
     const kv = resolveKv(env);
-    let ttlSeconds = 365 * 24 * 60 * 60; // 默认 1 年兜底
+    let ttlSeconds = 365 * 24 * 60 * 60; // exp 未知时的兜底（旧记录最长 30 天，1 年足够覆盖）
     try {
       const devices = await getDevices(kv, userId);
       const target = devices.find(d => d.jti === targetJti);
@@ -61,8 +62,8 @@ export async function onRequestDelete(context) {
           const remaining = target.exp - nowSec;
           if (remaining > 0) ttlSeconds = remaining;
         } else if (target.exp === 0) {
-          // 永久 token：撤销标记保留 1 年
-          ttlSeconds = 365 * 24 * 60 * 60;
+          // 永久 token：撤销标记永久保留
+          ttlSeconds = 0;
         }
         // exp 未定义时保持默认兜底值
       }

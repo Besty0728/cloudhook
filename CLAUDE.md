@@ -38,18 +38,19 @@ cd frontend && npm run lint   # ESLint
 
 ### 3. 认证与设备模型
 
-- Token 为**无状态 HMAC-SHA256 签名**：`base64url(payload).hex(sig)`，`verifyAuthToken` 只验签名 + exp（exp=0 为永久），不查 KV
-- 吊销靠 KV 黑名单 `revoked_{jti}`（key 经 `revokedKey()` 剥离连字符等非法字符）
+- Token 为**无状态 HMAC-SHA256 签名**：`base64url(payload).hex(sig)`，`verifyAuthToken` 只验签名 + exp（exp=0 为永久），不查 KV；`{ ignoreExp: true }` 可只验签跳过过期检查（hook 链路区分「无效」与「过期」用）
+- 吊销靠 KV 黑名单 `revoked_{jti}`（key 经 `revokedKey()` 剥离连字符等非法字符）；**撤销永久 token（exp=0）时标记不设 TTL**，否则标记到期后 token 复活
 - **管理端点一律用 `requireAuth(request, env)` 鉴权**（验签 + 吊销检查）：吊销名单不可读时 fail-closed 返回 503；hook/notify 通知链路直接调 `isTokenRevoked`，KV 异常时 fail-open 保推送可用性
 - 敏感写操作（撤销设备、改配置、揭示 Token）额外要求 `X-Password-Hash` 头（前端已对密码做 SHA-256）
-- **Token 是确定性可重算的**：注册表存 `iat/exp/jti/device_name`，用相同字段重签即得原文——这是「查看 Token」功能的原理，也意味着改设备名不影响已签发 Token
-- 设备指纹 = 前端对跨浏览器稳定属性（platform/screen/timezone/CPU 核数等，不含 UA/WebGL）的 SHA-256 哈希（`frontend/src/utils/deviceId.ts`），登录时指纹命中则复用既有 jti 去重；权衡：两台配置完全相同的机器会被视为同一设备
+- **Token 是确定性可重算的**：注册表存 `iat/exp/jti/device_name`，用相同字段重签即得原文——这是「查看 Token」功能的原理，也意味着改设备名不影响已签发 Token；`buildTokenPayload` 中 exp/ttlSeconds 的 **0 是合法值（永久）**，不得用 `||` 短路
+- **登录设备匹配三层线索**（`frontend/src/utils/deviceId.ts` + `api/token.js`），按优先级：① `previous_jti`——本浏览器上次绑定的设备 jti（localStorage `cloudhook_device_jti`，logout 不清除），同浏览器重登无条件续接、指纹漂移免疫，已吊销的 jti 不复用；② `device_fingerprint`（v2）——仅由 platform/时区/min(CPU 核数,8) 哈希而成的跨浏览器稳定指纹（screen/DPR/languages/deviceMemory 均随环境或浏览器而变，不得加入）；③ `legacy_fingerprints`——历史 v1 属性哈希与更早的随机 UUID，仅迁移期兜底。命中任意一层即复用 jti 并把注册表指纹升级为当前 v2 值（自愈）。权衡：同平台同时区同核数的两台机器会被视为同一设备
 
 ### 4. Hook 事件处理流水线（hook.js）
 
 解析（`parseEvent` 限量提取字符串，2000 节点/8KB 上限）→ `classify` 分类（permission_required / attention_required / task_done / turn_paused / info）→ `getRiskLevel` 风险评级 → `buildMessage` 构建文案 → `safeWaitUntil` 异步推 Bark + 写日志 → 立即返回 200。
 
 - `Stop` 事件按 `background_tasks` 数组（Claude Code v2.1.145+）区分：非空 → `turn_paused`（只记日志不推送），空/缺失 → `task_done`
+- **被拒绝的 hook 请求也写访问日志**（result=denied/rate_limited + reason：missing_token/invalid_token/token_expired/token_revoked/ip/geo/rate），响应仍为 HTTP 200 + `success:false`；事件日志的 `notified` 记录**真实推送结果**，失败时附 `push_error`（hook.js 与 notify.js 是双份副本，改动须同步）
 - 事件日志滚动保留 100 条、访问日志 200 条；`user_{uid}_event_count` 是独立累计计数器，清空日志不影响它
 
 ### 5. 目录结构

@@ -39,6 +39,8 @@ export interface Event {
   title?: string;
   body?: string;
   notified?: boolean;
+  /** 推送失败原因（notified=false 且确实尝试过推送时才有） */
+  push_error?: string;
   /** 来源设备 ID（新日志才有；存量日志为 undefined） */
   jti?: string;
   /** @deprecated 旧字段，后端已移除，保留以免旧页面编译报错 */

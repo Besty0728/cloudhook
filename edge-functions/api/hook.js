@@ -131,41 +131,67 @@ export async function onRequestPost(context) {
   var startTime = Date.now();
 
   try {
+    var kv = resolveKv(env);
+    var clientIp = getClientIp(request);
+    var userAgent = request.headers.get('User-Agent') || '';
+    var headerEvent = request.headers.get('X-Hook-Event') || '';
+
+    // 被拒绝的请求也写访问日志（异步、不阻塞响应）。此前只有成功请求留痕，
+    // token 过期/被吊销时 hook 静默失败（HTTP 仍是 200），完全无从诊断。
+    // 单用户系统，uid 恒为 default，签名未通过时也归入该用户的日志。
+    var denyLog = function(reason, extra) {
+      extra = extra || {};
+      safeWaitUntil(context, writeAccessLog(kv, extra.uid || 'default', {
+        ip: clientIp,
+        user_agent: userAgent,
+        result: extra.result || 'denied',
+        reason: reason,
+        event_name: headerEvent || undefined,
+        jti: extra.jti || undefined
+      }));
+    };
+
     // 1. 安全验证
     var token = request.headers.get('X-CloudHook-Token');
     if (!token) {
+      denyLog('missing_token');
       return jsonResponse({ success: false, error: 'Missing token' });
     }
 
-    var payload = await verifyAuthToken(token, env.HMAC_SECRET, { full: true });
+    // 先只验签名（ignoreExp），过期单独判——日志与响应区分「签名无效」和「已过期」
+    var payload = await verifyAuthToken(token, env.HMAC_SECRET, { full: true, ignoreExp: true });
     if (!payload) {
+      denyLog('invalid_token');
       return jsonResponse({ success: false, error: 'Invalid token' });
     }
+    if (payload.exp > 0 && payload.exp < Math.floor(Date.now() / 1000)) {
+      denyLog('token_expired', { uid: payload.uid, jti: payload.jti });
+      return jsonResponse({ success: false, error: 'Token expired' });
+    }
     var userId = payload.uid;
-
-    var kv = resolveKv(env);
 
     // kvError 时放行：通知可用性优先，吊销名单不可读不应阻断告警推送（内部已记日志）
     var revokeCheck = await isTokenRevoked(kv, payload.jti);
     if (revokeCheck.revoked) {
+      denyLog('token_revoked', { uid: userId, jti: payload.jti });
       return jsonResponse({ success: false, error: 'Token revoked' });
     }
 
     // 2. 读取用户配置
     var config = await getUserConfig(kv, userId, env);
     var riskControl = config.risk_control || {};
-    var clientIp = getClientIp(request);
-    var userAgent = request.headers.get('User-Agent') || '';
 
     // 3. 风控：IP 检查
     var ipResult = checkIpAccess(riskControl.ip, clientIp);
     if (!ipResult.allowed) {
+      denyLog(ipResult.reason || 'ip_denied', { uid: userId, jti: payload.jti });
       return jsonResponse({ success: false, error: 'Access denied', reason: ipResult.reason });
     }
 
     // 4. 风控：地理检查
     var geoResult = checkGeoRestriction(riskControl.geo, request);
     if (!geoResult.allowed) {
+      denyLog(geoResult.reason || 'geo_denied', { uid: userId, jti: payload.jti });
       return jsonResponse({ success: false, error: 'Access denied', reason: geoResult.reason });
     }
 
@@ -177,6 +203,7 @@ export async function onRequestPost(context) {
     if (rateLimitEnabled) {
       var isRateLimited = await checkRateLimit(kv, userId, 'hook', maxPerMinute);
       if (isRateLimited) {
+        denyLog('rate_limit_exceeded', { uid: userId, jti: payload.jti, result: 'rate_limited' });
         return jsonResponse({ success: false, error: 'Rate limit exceeded' });
       }
     }
@@ -197,7 +224,8 @@ export async function onRequestPost(context) {
     // 8. 构建消息
     var message = buildMessage(eventType, parsed, null, null, null, parsed.summary, config, payload.dev);
 
-    // 9. 异步推送 & 记录（不阻塞响应）
+    // 9. 异步推送 & 记录（不阻塞响应）。三步各自隔离：任一步失败不吞掉其余步骤
+    //    ——此前 pushBark 抛异常会连事件日志一起丢，事件像从未发生过一样无法排查。
     safeWaitUntil(context, (async function() {
       try {
         await writeAccessLog(kv, userId, {
@@ -209,28 +237,46 @@ export async function onRequestPost(context) {
           event_name: eventName,
           jti: payload.jti
         });
+      } catch (logErr) { /* 忽略，不影响推送 */ }
 
-        var barkKey = config.bark_key;
-        if (config.bark_key_encrypted && env.ENCRYPTION_KEY) {
-          try {
-            barkKey = await decrypt(config.bark_key_encrypted, env.ENCRYPTION_KEY);
-          } catch (e) {
-            barkKey = null;
-          }
-        }
-
-        if (barkKey && shouldNotify) {
-          await pushBark(
-            barkKey,
-            config.bark_server || 'https://api.day.app',
-            message.title, message.body,
-            {
-              group: 'CloudHook',
-              level: (config.notifier && config.notifier.level) || 'timeSensitive'
+      // 推送结果如实记录：notified = 真实送达 Bark，而非「打算推送」。
+      // 失败原因写入 push_error（Bark HTTP 错误 / 超时 / key 未配置等），事件页可见。
+      var pushed = false;
+      var pushError = '';
+      if (shouldNotify) {
+        try {
+          var barkKey = config.bark_key;
+          if (config.bark_key_encrypted && env.ENCRYPTION_KEY) {
+            try {
+              barkKey = await decrypt(config.bark_key_encrypted, env.ENCRYPTION_KEY);
+            } catch (e) {
+              barkKey = null;
+              pushError = 'bark_key_decrypt_failed';
             }
-          );
+          }
+          if (barkKey) {
+            var pushResult = await pushBark(
+              barkKey,
+              config.bark_server || 'https://api.day.app',
+              message.title, message.body,
+              {
+                group: 'CloudHook',
+                level: (config.notifier && config.notifier.level) || 'timeSensitive'
+              }
+            );
+            pushed = !!(pushResult && pushResult.success);
+            if (!pushed && !pushError) {
+              pushError = (pushResult && pushResult.message) || 'push_failed';
+            }
+          } else if (!pushError) {
+            pushError = 'bark_key_missing';
+          }
+        } catch (pushErr) {
+          pushError = (pushErr && pushErr.message) || 'push_exception';
         }
+      }
 
+      try {
         await logEvent(kv, userId, {
           timestamp: parsed.timestamp,
           event_type: eventType,
@@ -238,13 +284,12 @@ export async function onRequestPost(context) {
           title: message.title,
           body: message.body,
           risk_level: getRiskLevel(eventType, parsed),
-          notified: shouldNotify,
+          notified: pushed,
+          push_error: shouldNotify && !pushed ? pushError : undefined,
           token_id: token.slice(0, 8),
           jti: payload.jti
         });
-      } catch (bgErr) {
-        // 后台错误只记日志，不影响响应
-      }
+      } catch (logErr) { /* 忽略 */ }
     })());
 
     // 10. 快速返回

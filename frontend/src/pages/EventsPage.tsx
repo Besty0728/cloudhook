@@ -193,8 +193,8 @@ function EventDetailModal({ event, deviceNameMap, onClose }: EventDetailModalPro
             </div>
             <div>
               <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">通知状态</p>
-              <span className={`text-xs font-semibold ${event.notified ? 'text-emerald-600' : 'text-gray-400'}`}>
-                {event.notified ? '已推送' : '未推送'}
+              <span className={`text-xs font-semibold ${event.notified ? 'text-emerald-600' : event.push_error ? 'text-red-500' : 'text-gray-400'}`}>
+                {event.notified ? '已推送' : event.push_error ? `推送失败：${event.push_error}` : '未推送'}
               </span>
             </div>
             <div>

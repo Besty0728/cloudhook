@@ -4,14 +4,20 @@
 
 import { apiClient } from './client';
 import { ApiResponse } from '@/types/api';
-import { getDeviceFingerprint, getLegacyDeviceFingerprint } from '@/utils/deviceId';
+import {
+  getDeviceFingerprint,
+  getLegacyFingerprints,
+  getKnownDeviceJti,
+  rememberDeviceJti,
+} from '@/utils/deviceId';
 
 export interface LoginRequest {
   device_name: string;
   master_password: string;
   user_id?: string;
+  previous_jti?: string;
   device_fingerprint?: string;
-  legacy_fingerprint?: string;
+  legacy_fingerprints?: string[];
 }
 
 export interface LoginResponse {
@@ -19,11 +25,13 @@ export interface LoginResponse {
   token: string;
   device_name: string;
   user_id: string;
+  jti?: string;
 }
 
 /**
  * 生成 Token（登录）
  * 单用户模式：仅凭 Master Password 登录，device_name 固定占位。
+ * 设备身份三层线索（jti 续接 > v2 指纹 > 旧版指纹）见 utils/deviceId.ts。
  */
 export async function login(
   masterPassword: string
@@ -32,9 +40,13 @@ export async function login(
     device_name: 'Web',
     master_password: masterPassword,
     user_id: 'default', // 单用户模式
-    device_fingerprint: await getDeviceFingerprint(), // 机器级指纹（跨浏览器稳定），后端据此去重避免重复创建
-    legacy_fingerprint: getLegacyDeviceFingerprint(), // 旧版 UUID 指纹（如存在），供后端迁移期匹配复用原设备
+    previous_jti: getKnownDeviceJti(), // 本浏览器上次绑定的设备，重登时无条件续接
+    device_fingerprint: await getDeviceFingerprint(), // v2 机器指纹，跨浏览器归并同一设备
+    legacy_fingerprints: await getLegacyFingerprints(), // 历史指纹（v1 哈希/UUID），迁移期匹配旧记录
   });
+  if (response.data?.jti) {
+    rememberDeviceJti(response.data.jti); // 绑定关系落盘，logout 后依然可续接
+  }
   return response.data;
 }
 

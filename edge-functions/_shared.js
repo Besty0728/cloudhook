@@ -99,7 +99,9 @@ export async function verifyAuthToken(token, secret, options = {}) {
     const payload = JSON.parse(base64UrlDecode(payloadStr));
     // exp === 0 means permanent; missing exp means invalid
     if (payload.exp === undefined || payload.exp === null) return null;
-    if (payload.exp > 0) {
+    // ignoreExp：签名照常验证，仅跳过过期检查。供 hook 链路区分
+    // 「签名无效」与「签名有效但已过期」，用于访问日志与错误提示。
+    if (!options.ignoreExp && payload.exp > 0) {
       const now = Math.floor(Date.now() / 1000);
       if (payload.exp < now) return null;
     }
@@ -376,7 +378,16 @@ function revokedKey(jti) {
   return `revoked_${String(jti).replace(/[^A-Za-z0-9_]/g, '')}`;
 }
 
+/**
+ * 写撤销标记。ttlSeconds === 0 表示撤销的是永久 token：标记不设 TTL 永久保留
+ * （否则标记到期消失后，被撤销的永久 token 会重新变为可用）。
+ * 其余情况按剩余有效期设置 TTL，最短 60 秒。
+ */
 export async function revokeToken(kv, jti, ttlSeconds) {
+  if (ttlSeconds === 0) {
+    await kv.put(revokedKey(jti), '1');
+    return;
+  }
   const ttl = Math.max(60, Math.floor(ttlSeconds || 60));
   await kv.put(revokedKey(jti), '1', { expirationTtl: ttl });
 }
