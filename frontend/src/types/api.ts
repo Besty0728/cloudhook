@@ -3,6 +3,9 @@
  * 严格对齐 .dev/API_CONTRACT.md
  */
 
+/** 事件来源智能体：claude_code / codex / antigravity 为已识别来源，unknown 为兜底 */
+export type AgentId = 'claude_code' | 'codex' | 'antigravity' | 'unknown';
+
 export interface Config {
   bark_key: string;
   bark_server: string;
@@ -28,6 +31,8 @@ export interface Config {
       max_per_minute: number;
     };
   };
+  /** 按来源（智能体）独立开关；缺字段或缺具体来源键一律视为已启用 */
+  agents?: Partial<Record<AgentId, { enabled: boolean }>>;
 }
 
 /** 事件记录，新增 title / body / notified 字段 */
@@ -43,6 +48,8 @@ export interface Event {
   push_error?: string;
   /** 来源设备 ID（新日志才有；存量日志为 undefined） */
   jti?: string;
+  /** 事件来源智能体（新日志才有；存量日志为 undefined） */
+  agent?: AgentId;
   /** @deprecated 旧字段，后端已移除，保留以免旧页面编译报错 */
   message?: string;
   /** @deprecated 旧字段 */
@@ -64,6 +71,10 @@ export interface AccessLog {
   event_name?: string;
   /** 来源设备 ID（新日志才有；存量日志为 undefined） */
   jti?: string;
+  /** 事件来源智能体（新日志才有） */
+  agent?: AgentId;
+  /** 来源识别命中层级：header / ua / shape / fallback（新日志才有） */
+  agent_source?: string;
 }
 
 /** 设备（Token）信息，对应 GET /api/token 返回的 Device 结构 */

@@ -84,7 +84,7 @@ export default function Layout() {
               {/* 登出按钮 */}
               <button
                 onClick={handleLogout}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-all duration-200"
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white/70 border border-gray-300 shadow-sm hover:text-gray-900 hover:bg-gray-100 hover:border-gray-400 active:scale-[0.97] rounded-xl transition-all duration-200"
                 aria-label="登出"
               >
                 <LogOut size={18} />
@@ -131,7 +131,7 @@ export default function Layout() {
         </div>
 
         {/* ── 主内容区 ── */}
-        <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+        <main className="max-w-7xl mx-auto py-6 pb-16 sm:px-6 lg:px-8">
           <Outlet />
         </main>
       </div>

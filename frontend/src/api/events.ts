@@ -13,12 +13,15 @@ import { EventsResponse, DeleteResponse } from '@/types/api';
  * @param limit  - 每页条数，默认 20
  * @param offset - 偏移量，默认 0
  * @param type   - 事件类型过滤（可选）
+ * @param device - 设备 jti 过滤（可选）
+ * @param agent  - 来源智能体过滤（可选）
  */
 export async function getEvents(
   limit = 20,
   offset = 0,
   type?: string,
-  device?: string
+  device?: string,
+  agent?: string
 ): Promise<EventsResponse> {
   const params: Record<string, unknown> = { limit, offset };
   if (type) {
@@ -26,6 +29,9 @@ export async function getEvents(
   }
   if (device) {
     params.device = device;
+  }
+  if (agent) {
+    params.agent = agent;
   }
 
   const response = await apiClient.get<EventsResponse>('/api/events', { params });

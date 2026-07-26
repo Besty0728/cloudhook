@@ -8,7 +8,7 @@ import { getConfig, updateConfig, testBarkPush } from '@/api/config';
 import { Config } from '@/types/api';
 import { Button, Input, TagInput } from '@/components/ui';
 import UiverseToggle from '@/components/ui/UiverseToggle';
-import { Eye, EyeOff, Bell, UserCircle, ShieldAlert } from 'lucide-react';
+import { Eye, EyeOff, Bell, UserCircle, ShieldAlert, Bot } from 'lucide-react';
 import { useToast } from '@/hooks/useToast';
 import Toast from '@/components/Toast';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -130,7 +130,15 @@ export default function ConfigPage() {
   const [personaUserName, setPersonaUserName] = useState('');
   const [savingPersona, setSavingPersona] = useState(false);
 
-  // ── 3. 风控 risk_control ──────────────────────────────────────────────────
+  // ── 3. 智能体来源开关 ─────────────────────────────────────────────────────
+  // 缺字段/缺具体来源键一律视为已启用（兼容存量配置，见 CLAUDE.md 约束）
+  const [agentClaudeCodeEnabled, setAgentClaudeCodeEnabled] = useState(true);
+  const [agentCodexEnabled, setAgentCodexEnabled] = useState(true);
+  const [agentAntigravityEnabled, setAgentAntigravityEnabled] = useState(true);
+  const [agentUnknownEnabled, setAgentUnknownEnabled] = useState(true);
+  const [savingAgents, setSavingAgents] = useState(false);
+
+  // ── 4. 风控 risk_control ──────────────────────────────────────────────────
   const [geoEnabled, setGeoEnabled] = useState(false);
   const [geoCountries, setGeoCountries] = useState<string[]>([]);
   const [geoRegions, setGeoRegions] = useState<string[]>([]);
@@ -156,6 +164,12 @@ export default function ConfigPage() {
       // Persona
       setPersonaEnabled(cfg.persona?.enabled ?? false);
       setPersonaUserName(cfg.persona?.user_name ?? '');
+
+      // 智能体来源（缺字段/缺具体来源键一律视为已启用，不得因缺字段静音）
+      setAgentClaudeCodeEnabled(cfg.agents?.claude_code?.enabled ?? true);
+      setAgentCodexEnabled(cfg.agents?.codex?.enabled ?? true);
+      setAgentAntigravityEnabled(cfg.agents?.antigravity?.enabled ?? true);
+      setAgentUnknownEnabled(cfg.agents?.unknown?.enabled ?? true);
 
       // 风控
       setGeoEnabled(cfg.risk_control?.geo?.enabled ?? false);
@@ -242,6 +256,21 @@ export default function ConfigPage() {
       },
       setSavingPersona,
       '角色配置',
+    );
+
+  const handleSaveAgents = () =>
+    doSave(
+      {
+        // 后端顶层浅合并：agents 子树会被整体替换，四个 key 必须全部带上
+        agents: {
+          claude_code: { enabled: agentClaudeCodeEnabled },
+          codex: { enabled: agentCodexEnabled },
+          antigravity: { enabled: agentAntigravityEnabled },
+          unknown: { enabled: agentUnknownEnabled },
+        },
+      },
+      setSavingAgents,
+      '智能体来源配置',
     );
 
   const handleSaveRc = () =>
@@ -383,7 +412,44 @@ export default function ConfigPage() {
           </FieldRow>
         </SectionCard>
 
-        {/* ── 3. 风险控制（风控）── */}
+        {/* ── 3. 智能体来源 ── */}
+        <SectionCard
+          title="智能体来源"
+          icon={<Bot className="w-5 h-5 text-white" strokeWidth={2.2} />}
+          onSave={handleSaveAgents}
+          saving={savingAgents}
+        >
+          <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
+            <div>
+              <p className="text-sm font-medium text-gray-800 tracking-wide">Claude Code</p>
+              <p className="text-xs text-gray-500 mt-0.5 tracking-wide">关闭后该来源事件只记日志、不推送 Bark</p>
+            </div>
+            <UiverseToggle checked={agentClaudeCodeEnabled} onChange={setAgentClaudeCodeEnabled} />
+          </div>
+          <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
+            <div>
+              <p className="text-sm font-medium text-gray-800 tracking-wide">Codex</p>
+              <p className="text-xs text-gray-500 mt-0.5 tracking-wide">关闭后该来源事件只记日志、不推送 Bark</p>
+            </div>
+            <UiverseToggle checked={agentCodexEnabled} onChange={setAgentCodexEnabled} />
+          </div>
+          <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
+            <div>
+              <p className="text-sm font-medium text-gray-800 tracking-wide">Antigravity</p>
+              <p className="text-xs text-gray-500 mt-0.5 tracking-wide">关闭后该来源事件只记日志、不推送 Bark</p>
+            </div>
+            <UiverseToggle checked={agentAntigravityEnabled} onChange={setAgentAntigravityEnabled} />
+          </div>
+          <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
+            <div>
+              <p className="text-sm font-medium text-gray-800 tracking-wide">其他来源</p>
+              <p className="text-xs text-gray-500 mt-0.5 tracking-wide">未识别的来源；关闭后只记日志、不推送 Bark</p>
+            </div>
+            <UiverseToggle checked={agentUnknownEnabled} onChange={setAgentUnknownEnabled} />
+          </div>
+        </SectionCard>
+
+        {/* ── 4. 风险控制（风控）── */}
         <SectionCard
           title="风险控制"
           icon={<ShieldAlert className="w-5 h-5 text-white" strokeWidth={2.2} />}

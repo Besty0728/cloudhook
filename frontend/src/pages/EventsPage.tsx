@@ -7,7 +7,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { getEvents, deleteEvents, clearAllEvents } from '@/api/events';
 import { getAccessLogs, deleteAccessLogsByIds, clearAllAccessLogs } from '@/api/accessLogs';
 import { getDevices } from '@/api/tokens';
-import { Event, AccessLog, Device } from '@/types/api';
+import { Event, AccessLog, Device, AgentId } from '@/types/api';
 import { formatRelativeTime } from '@/utils/format';
 import { StatusBadge, EmptyState, Button, ConfirmDialog } from '@/components/ui';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -26,6 +26,31 @@ const EVENT_TYPE_OPTIONS: { label: string; value: string }[] = [
   { label: '轮次结束', value: 'turn_paused' },
   { label: '信息', value: 'info' },
 ];
+
+/** 来源智能体筛选选项 */
+const AGENT_OPTIONS: { label: string; value: string }[] = [
+  { label: '全部来源', value: '' },
+  { label: 'Claude Code', value: 'claude_code' },
+  { label: 'Codex', value: 'codex' },
+  { label: 'Antigravity', value: 'antigravity' },
+  { label: '其他', value: 'unknown' },
+];
+
+/** 来源智能体显示名（存量日志无 agent 字段时不展示，不落入此表） */
+const AGENT_LABEL: Record<string, string> = {
+  claude_code: 'Claude Code',
+  codex: 'Codex',
+  antigravity: 'Antigravity',
+  unknown: '其他智能体',
+};
+
+/** 来源智能体徽章配色（柔和底色 + 同色系文字/边框） */
+const AGENT_BADGE_STYLE: Record<string, string> = {
+  claude_code: 'bg-amber-50 text-amber-700 border-amber-200',
+  codex: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  antigravity: 'bg-sky-50 text-sky-700 border-sky-200',
+  unknown: 'bg-gray-100 text-gray-600 border-gray-200',
+};
 
 // ─── Toast 简易内部实现（保持页面自包含）─────────────────────────────────────
 
@@ -180,6 +205,12 @@ function EventDetailModal({ event, deviceNameMap, onClose }: EventDetailModalPro
               </span>
             </div>
             <div>
+              <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">来源</p>
+              <p className="text-xs text-gray-600">
+                {event.agent ? (AGENT_LABEL[event.agent] ?? event.agent) : '—'}
+              </p>
+            </div>
+            <div>
               <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">风险等级</p>
               {event.risk_level ? (
                 <StatusBadge status={event.risk_level} />
@@ -193,8 +224,22 @@ function EventDetailModal({ event, deviceNameMap, onClose }: EventDetailModalPro
             </div>
             <div>
               <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">通知状态</p>
-              <span className={`text-xs font-semibold ${event.notified ? 'text-emerald-600' : event.push_error ? 'text-red-500' : 'text-gray-400'}`}>
-                {event.notified ? '已推送' : event.push_error ? `推送失败：${event.push_error}` : '未推送'}
+              <span className={`text-xs font-semibold ${
+                event.notified
+                  ? 'text-emerald-600'
+                  : event.push_error === 'agent_muted'
+                    ? 'text-gray-500'
+                    : event.push_error
+                      ? 'text-red-500'
+                      : 'text-gray-400'
+              }`}>
+                {event.notified
+                  ? '已推送'
+                  : event.push_error === 'agent_muted'
+                    ? '已静音（来源开关关闭）'
+                    : event.push_error
+                      ? `推送失败：${event.push_error}`
+                      : '未推送'}
               </span>
             </div>
             <div>
@@ -263,6 +308,33 @@ function DeviceFilter({
   );
 }
 
+// ─── 子组件：来源智能体筛选下拉 ────────────────────────────────────────────────
+
+function AgentFilter({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-200 bg-white text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-black/10 transition-colors cursor-pointer"
+    >
+      {AGENT_OPTIONS.map((opt) => (
+        <option key={opt.value} value={opt.value}>{opt.label}</option>
+      ))}
+    </select>
+  );
+}
+
+// ─── 子组件：来源智能体徽章（agent 为 undefined 时不渲染，兼容存量日志）──────────
+
+function AgentBadge({ agent }: { agent?: AgentId }) {
+  if (!agent) return null;
+  return (
+    <span className={`flex-shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${AGENT_BADGE_STYLE[agent] ?? AGENT_BADGE_STYLE.unknown}`}>
+      {AGENT_LABEL[agent] ?? agent}
+    </span>
+  );
+}
+
 // ─── 子组件：设备名标签（jti→设备名映射；查不到显示「已删除设备」；无 jti 不显示）──
 
 function DeviceTag({ jti, deviceNameMap }: { jti?: string; deviceNameMap: Map<string, string> }) {
@@ -287,6 +359,7 @@ function EventsTab({ addToast, devices, deviceNameMap }: { addToast: (type: Toas
   const [offset, setOffset] = useState(0);
   const [typeFilter, setTypeFilter] = useState('');
   const [deviceFilter, setDeviceFilter] = useState('');
+  const [agentFilter, setAgentFilter] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
@@ -294,11 +367,11 @@ function EventsTab({ addToast, devices, deviceNameMap }: { addToast: (type: Toas
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'delete_selected' | 'clear_all' | null>(null);
 
-  const load = useCallback(async (newOffset: number, newType: string, newDevice: string) => {
+  const load = useCallback(async (newOffset: number, newType: string, newDevice: string, newAgent: string) => {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await getEvents(PAGE_SIZE, newOffset, newType || undefined, newDevice || undefined);
+      const data = await getEvents(PAGE_SIZE, newOffset, newType || undefined, newDevice || undefined, newAgent || undefined);
       setEvents(data.events || []);
       setTotal(data.total || 0);
       setHasMore(data.has_more || false);
@@ -313,30 +386,37 @@ function EventsTab({ addToast, devices, deviceNameMap }: { addToast: (type: Toas
 
   // 初始加载
   useEffect(() => {
-    load(0, typeFilter, deviceFilter);
+    load(0, typeFilter, deviceFilter, agentFilter);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 切换类型筛选：重置到第 0 页，清空选择
   const handleTypeChange = (val: string) => {
     setTypeFilter(val);
     setSelectedIndices(new Set());
-    load(0, val, deviceFilter);
+    load(0, val, deviceFilter, agentFilter);
   };
 
   // 切换设备筛选：重置到第 0 页，清空选择
   const handleDeviceChange = (val: string) => {
     setDeviceFilter(val);
     setSelectedIndices(new Set());
-    load(0, typeFilter, val);
+    load(0, typeFilter, val, agentFilter);
+  };
+
+  // 切换来源筛选：重置到第 0 页，清空选择
+  const handleAgentChange = (val: string) => {
+    setAgentFilter(val);
+    setSelectedIndices(new Set());
+    load(0, typeFilter, deviceFilter, val);
   };
 
   const handlePrev = () => {
     setSelectedIndices(new Set());
-    load(Math.max(0, offset - PAGE_SIZE), typeFilter, deviceFilter);
+    load(Math.max(0, offset - PAGE_SIZE), typeFilter, deviceFilter, agentFilter);
   };
   const handleNext = () => {
     setSelectedIndices(new Set());
-    load(offset + PAGE_SIZE, typeFilter, deviceFilter);
+    load(offset + PAGE_SIZE, typeFilter, deviceFilter, agentFilter);
   };
 
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
@@ -372,7 +452,7 @@ function EventsTab({ addToast, devices, deviceNameMap }: { addToast: (type: Toas
         addToast('error', result.message || '删除失败');
       }
       setSelectedIndices(new Set());
-      await load(offset, typeFilter, deviceFilter);
+      await load(offset, typeFilter, deviceFilter, agentFilter);
     } catch (err: unknown) {
       addToast('error', `删除失败：${err instanceof Error ? err.message : '未知错误'}`);
     } finally {
@@ -391,7 +471,7 @@ function EventsTab({ addToast, devices, deviceNameMap }: { addToast: (type: Toas
         addToast('error', result.message || '清空失败');
       }
       setSelectedIndices(new Set());
-      await load(0, typeFilter, deviceFilter);
+      await load(0, typeFilter, deviceFilter, agentFilter);
     } catch (err: unknown) {
       addToast('error', `清空失败：${err instanceof Error ? err.message : '未知错误'}`);
     } finally {
@@ -419,6 +499,8 @@ function EventsTab({ addToast, devices, deviceNameMap }: { addToast: (type: Toas
           </button>
         ))}
         <div className="flex-1" />
+        <span className="text-xs font-medium text-gray-400 tracking-wide">来源：</span>
+        <AgentFilter value={agentFilter} onChange={handleAgentChange} />
         <span className="text-xs font-medium text-gray-400 tracking-wide">设备：</span>
         <DeviceFilter devices={devices} value={deviceFilter} onChange={handleDeviceChange} />
       </div>
@@ -472,7 +554,7 @@ function EventsTab({ addToast, devices, deviceNameMap }: { addToast: (type: Toas
             >
               清空全部
             </button>
-            <Button variant="refresh" onClick={() => load(offset, typeFilter, deviceFilter)} disabled={isLoading}>
+            <Button variant="refresh" onClick={() => load(offset, typeFilter, deviceFilter, agentFilter)} disabled={isLoading}>
               刷新
             </Button>
           </div>
@@ -492,7 +574,7 @@ function EventsTab({ addToast, devices, deviceNameMap }: { addToast: (type: Toas
                 </svg>
               </div>
               <p className="text-red-600 text-sm mb-4">{error}</p>
-              <Button variant="secondary" onClick={() => load(offset, typeFilter, deviceFilter)}>重试</Button>
+              <Button variant="secondary" onClick={() => load(offset, typeFilter, deviceFilter, agentFilter)}>重试</Button>
             </div>
           ) : events.length === 0 ? (
             <EmptyState
@@ -609,6 +691,7 @@ function EventRow({ event, selected, onToggleSelect, onClick, deviceNameMap }: E
             <span className="flex-shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-700 border border-gray-200">
               {event.event_type}
             </span>
+            <AgentBadge agent={event.agent} />
             <DeviceTag jti={event.jti} deviceNameMap={deviceNameMap} />
           </div>
           <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1">
@@ -622,14 +705,18 @@ function EventRow({ event, selected, onToggleSelect, onClick, deviceNameMap }: E
 
       {/* 右侧：风险等级 + 通知状态 */}
       <div className="flex-shrink-0 flex items-center gap-2 ml-3">
-        {event.notified && (
+        {event.notified ? (
           <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-600">
             <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
               <path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-2.83-2h5.66A3 3 0 0110 18z" />
             </svg>
             已通知
           </span>
-        )}
+        ) : event.push_error === 'agent_muted' ? (
+          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-gray-400">
+            已静音
+          </span>
+        ) : null}
         {event.risk_level && <StatusBadge status={event.risk_level} />}
         {/* 展开箭头 */}
         <svg className="w-4 h-4 text-gray-300 group-hover:text-gray-500 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -648,17 +735,18 @@ function AccessLogsTab({ addToast, devices, deviceNameMap }: { addToast: (type: 
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
   const [deviceFilter, setDeviceFilter] = useState('');
+  const [agentFilter, setAgentFilter] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'delete_selected' | 'clear_all' | null>(null);
 
-  const load = useCallback(async (newOffset: number, newDevice: string) => {
+  const load = useCallback(async (newOffset: number, newDevice: string, newAgent: string) => {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await getAccessLogs(PAGE_SIZE, newOffset, newDevice || undefined);
+      const data = await getAccessLogs(PAGE_SIZE, newOffset, newDevice || undefined, newAgent || undefined);
       setLogs(data.logs || []);
       setTotal(data.total || 0);
       setHasMore(data.has_more || false);
@@ -672,22 +760,28 @@ function AccessLogsTab({ addToast, devices, deviceNameMap }: { addToast: (type: 
   }, []);
 
   useEffect(() => {
-    load(0, deviceFilter);
+    load(0, deviceFilter, agentFilter);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePrev = () => {
     setSelectedIds(new Set());
-    load(Math.max(0, offset - PAGE_SIZE), deviceFilter);
+    load(Math.max(0, offset - PAGE_SIZE), deviceFilter, agentFilter);
   };
   const handleNext = () => {
     setSelectedIds(new Set());
-    load(offset + PAGE_SIZE, deviceFilter);
+    load(offset + PAGE_SIZE, deviceFilter, agentFilter);
   };
 
   const handleDeviceChange = (val: string) => {
     setDeviceFilter(val);
     setSelectedIds(new Set());
-    load(0, val);
+    load(0, val, agentFilter);
+  };
+
+  const handleAgentChange = (val: string) => {
+    setAgentFilter(val);
+    setSelectedIds(new Set());
+    load(0, deviceFilter, val);
   };
 
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
@@ -722,7 +816,7 @@ function AccessLogsTab({ addToast, devices, deviceNameMap }: { addToast: (type: 
         addToast('error', result.message || '删除失败');
       }
       setSelectedIds(new Set());
-      await load(offset, deviceFilter);
+      await load(offset, deviceFilter, agentFilter);
     } catch (err: unknown) {
       addToast('error', `删除失败：${err instanceof Error ? err.message : '未知错误'}`);
     } finally {
@@ -741,7 +835,7 @@ function AccessLogsTab({ addToast, devices, deviceNameMap }: { addToast: (type: 
         addToast('error', result.message || '清空失败');
       }
       setSelectedIds(new Set());
-      await load(0, deviceFilter);
+      await load(0, deviceFilter, agentFilter);
     } catch (err: unknown) {
       addToast('error', `清空失败：${err instanceof Error ? err.message : '未知错误'}`);
     } finally {
@@ -752,9 +846,11 @@ function AccessLogsTab({ addToast, devices, deviceNameMap }: { addToast: (type: 
 
   return (
     <div className="space-y-4">
-      {/* 设备筛选栏 */}
+      {/* 设备/来源筛选栏 */}
       <div className="flex flex-wrap items-center gap-2 bg-white/60 backdrop-blur-sm rounded-xl px-4 py-3 border border-gray-100 shadow-sm">
-        <span className="text-xs font-medium text-gray-400 mr-1 tracking-wide">设备筛选：</span>
+        <span className="text-xs font-medium text-gray-400 mr-1 tracking-wide">来源筛选：</span>
+        <AgentFilter value={agentFilter} onChange={handleAgentChange} />
+        <span className="text-xs font-medium text-gray-400 tracking-wide">设备筛选：</span>
         <DeviceFilter devices={devices} value={deviceFilter} onChange={handleDeviceChange} />
       </div>
 
@@ -806,7 +902,7 @@ function AccessLogsTab({ addToast, devices, deviceNameMap }: { addToast: (type: 
             >
               清空全部
             </button>
-            <Button variant="refresh" onClick={() => load(offset, deviceFilter)} disabled={isLoading}>
+            <Button variant="refresh" onClick={() => load(offset, deviceFilter, agentFilter)} disabled={isLoading}>
               刷新
             </Button>
           </div>
@@ -826,7 +922,7 @@ function AccessLogsTab({ addToast, devices, deviceNameMap }: { addToast: (type: 
                 </svg>
               </div>
               <p className="text-red-600 text-sm mb-4">{error}</p>
-              <Button variant="secondary" onClick={() => load(offset, deviceFilter)}>重试</Button>
+              <Button variant="secondary" onClick={() => load(offset, deviceFilter, agentFilter)}>重试</Button>
             </div>
           ) : logs.length === 0 ? (
             <EmptyState
@@ -938,6 +1034,7 @@ function AccessLogRow({ log, selected, onToggleSelect, deviceNameMap }: { log: A
             </span>
           )}
           <StatusBadge status={log.result} />
+          <AgentBadge agent={log.agent} />
           <DeviceTag jti={log.jti} deviceNameMap={deviceNameMap} />
         </div>
 
