@@ -32,7 +32,7 @@ cd frontend && npm run lint   # ESLint
 - **KV 绑定是全局变量注入**（如 `cloudhook_kv`），不是 `env.KV`；一律通过 `resolveKv(env)` 获取（探测 globalThis 候选名再查 env）
 - **KV key 只允许字母/数字/下划线**（不能含冒号等），所有 key 用 `user_{uid}_xxx` 格式
 - **5xx 会被平台 HTML 错误页覆盖**导致诊断信息丢失 → API 一律返回 HTTP 200，用 `body.success` 表达结果
-- **WAF 拦截源码中的字面量 `PermissionRequest`**（会 545）→ 用 `String.fromCharCode` 动态构建
+- **WAF 拦截源码中的字面量 `PermissionRequest`**（会 545）→ 边缘函数用 `String.fromCharCode` 动态构建；**前端源码里 `'A'+'B'` 拼接和 `fromCharCode(常量)` 都会被 rolldown/oxc 压缩器常量折叠回连写字面量进构建产物**，前端只能用 `atob('UGVybWlzc2lvblJlcXVlc3Q=')` 这类环境全局函数构建（压缩器不求值），改完必须 grep `public/assets/` 确认产物无连写
 - `console.log` 上限 20 次/执行
 - `context.waitUntil` 行为有运行时差异 → 用 `safeWaitUntil()` 封装
 
@@ -52,6 +52,14 @@ cd frontend && npm run lint   # ESLint
 - `Stop` 事件按 `background_tasks` 数组（Claude Code v2.1.145+）区分：非空 → `turn_paused`（只记日志不推送），空/缺失 → `task_done`
 - **被拒绝的 hook 请求也写访问日志**（result=denied/rate_limited + reason：missing_token/invalid_token/token_expired/token_revoked/ip/geo/rate），响应仍为 HTTP 200 + `success:false`；事件日志的 `notified` 记录**真实推送结果**，失败时附 `push_error`（hook.js 与 notify.js 是双份副本，改动须同步）
 - 事件日志滚动保留 100 条、访问日志 200 条；`user_{uid}_event_count` 是独立累计计数器，清空日志不影响它
+
+**多来源识别（Codex / Antigravity 支持）**
+
+- `detectAgent(request, rawEvent)` 在 `_shared.js` 与 `lib/agent-detect.js` 双份存在，按「`X-Agent-Type` 头 → UA 规则 → payload 形状 → 兜底」四层识别，返回 `{ id, name, source }`；id 取值 `claude_code` / `codex` / `antigravity` / `unknown`。Codex 与 Antigravity 只支持 command 类型 hook（即 curl 转发），UA 恒为 `curl/x.y`，单靠 UA 无法区分。
+- payload 形状判据用于 codex 识别时明确不检查 `agent_type` 字段——Claude Code 的 `SubagentStop` 事件也带 `agent_type`，容易误判，故以 `hook_event_name` + (`turn_id` | `model`) 双层判定。Antigravity payload 本身无事件名，由 `inferAgEventName` 按 `toolCall`、`terminationReason` 等形状推断；若转发脚本提供 `X-Hook-Event` 头则优先使用。
+- `classify(parsed, agentId)` 按来源分派分类规则映射：Claude Code 走现状规则（`Notification` 关键词扫描、`Stop` 按 `background_tasks` 分支），Codex / Antigravity 各有专属规则；unknown 来源兜底用 Claude Code 规则。
+- 通知文案由 `buildMessage(..., agentName)` 新增末位参数控制，显示名内置四个：`Claude Code` / `Codex` / `Antigravity` / `其他智能体`；config 新增 `agents.{id}.enabled` 段按来源独立开关（false 时仅记日志不推送，事件标记 `push_error:'agent_muted'`）；**旧配置无 agents 段视为全启用**，消费侧一律判 `!== false` / 前端 `?? true`，缺字段绝不能静音。
+- 事件日志与访问日志新增 `agent` 字段（访问日志另有 `agent_source` 记命中层级）；`GET /api/events?agent=` 与 `GET /api/access-logs?agent=` 支持按来源过滤。
 
 ### 5. 目录结构
 

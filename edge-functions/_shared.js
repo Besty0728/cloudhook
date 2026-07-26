@@ -241,6 +241,12 @@ export function getDefaultConfig() {
       geo: { enabled: false, allowed_countries: [], allowed_regions: [] },
       ip: { mode: 'off', allowlist: [], blocklist: [] },
       rate_limit: { enabled: true, max_per_minute: 100 }
+    },
+    agents: {
+      claude_code: { enabled: true },
+      codex: { enabled: true },
+      antigravity: { enabled: true },
+      unknown: { enabled: true }
     }
   };
 }
@@ -291,6 +297,7 @@ export async function getEvents(kv, userId, limit = 20, offset = 0, filter = {})
     let events = json ? JSON.parse(json) : [];
     if (filter.type) events = events.filter(e => e.event_type === filter.type);
     if (filter.device) events = events.filter(e => e.jti === filter.device);
+    if (filter.agent) events = events.filter(e => e.agent === filter.agent);
     // total_received：历史累计接收数（计数器缺失时用当前日志长度兜底）
     let totalReceived = events.length;
     try {
@@ -428,6 +435,7 @@ export async function getAccessLogs(kv, uid, limit = 20, offset = 0, filter = {}
     const json = await kv.get(key);
     let logs = json ? JSON.parse(json) : [];
     if (filter.device) logs = logs.filter(l => l.jti === filter.device);
+    if (filter.agent) logs = logs.filter(l => l.agent === filter.agent);
     return { logs: logs.slice(offset, offset + limit), total: logs.length, has_more: offset + limit < logs.length };
   } catch { return { logs: [], total: 0, has_more: false }; }
 }
@@ -636,6 +644,107 @@ export async function testBarkPush(barkKey, barkServer = 'https://api.day.app') 
 }
 
 // ============================================================================
+// agent-detect — 来源识别
+// ============================================================================
+
+export const AGENT_NAMES = {
+  claude_code: 'Claude Code',
+  codex: 'Codex',
+  antigravity: 'Antigravity',
+  unknown: '其他智能体'
+};
+
+// 显式标记归一化：trim → 小写 → 空格/连字符转下划线，再映射到内置 agent id
+function _normalizeAgentId(raw) {
+  try {
+    const v = String(raw).trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (v === 'claude' || v === 'claudecode' || v === 'claude_code') return 'claude_code';
+    if (v === 'codex' || v === 'codex_cli') return 'codex';
+    if (v === 'antigravity' || v === 'agy' || v === 'gemini') return 'antigravity';
+    return null;
+  } catch { return null; }
+}
+
+// 第 1 层：显式标记（请求头 X-Agent-Type，取不到再取 query ?agent=）
+function _detectByHeader(request) {
+  try {
+    let raw = request?.headers?.get?.('X-Agent-Type');
+    if (!raw) {
+      try { raw = new URL(request.url).searchParams.get('agent'); } catch { raw = null; }
+    }
+    if (!raw) return null;
+    const id = _normalizeAgentId(raw) || 'unknown';
+    return { id, name: AGENT_NAMES[id], source: 'header' };
+  } catch { return null; }
+}
+
+// 第 2 层：User-Agent 规则表。curl / 空 UA 无法区分来源，不判定，落下一层
+function _detectByUa(request) {
+  try {
+    const ua = (request?.headers?.get?.('User-Agent') || '').toLowerCase();
+    if (!ua || ua.includes('curl')) return null;
+    if (ua.includes('claude')) return { id: 'claude_code', name: AGENT_NAMES.claude_code, source: 'ua' };
+    if (ua.includes('codex')) return { id: 'codex', name: AGENT_NAMES.codex, source: 'ua' };
+    if (ua.includes('antigravity') || ua.includes('gemini')) return { id: 'antigravity', name: AGENT_NAMES.antigravity, source: 'ua' };
+    return null;
+  } catch { return null; }
+}
+
+// 第 3 层：payload 形状推断。Codex/Antigravity 只能 curl 转发，UA 恒为 curl/x.y，
+// 只能靠字段形状区分；顺序即优先级，命中即返回
+function _detectByShape(rawEvent) {
+  try {
+    if (!rawEvent || typeof rawEvent !== 'object') return null;
+    if (rawEvent.conversationId !== undefined && (
+      rawEvent.toolCall !== undefined ||
+      rawEvent.terminationReason !== undefined ||
+      rawEvent.invocationNum !== undefined ||
+      rawEvent.stepIdx !== undefined
+    )) {
+      return { id: 'antigravity', name: AGENT_NAMES.antigravity, source: 'shape' };
+    }
+    // 注意：不用 agent_type 作为 codex 判据 —— Claude Code 的 SubagentStop 事件
+    // 也带 agent_type 字段，用它判断会把 Claude Code 误判为 Codex
+    if (rawEvent.hook_event_name !== undefined && (
+      rawEvent.turn_id !== undefined || rawEvent.model !== undefined
+    )) {
+      return { id: 'codex', name: AGENT_NAMES.codex, source: 'shape' };
+    }
+    // Codex 旧版 notify 通道
+    if (rawEvent.type === 'agent-turn-complete') {
+      return { id: 'codex', name: AGENT_NAMES.codex, source: 'shape' };
+    }
+    if (rawEvent.hook_event_name !== undefined || rawEvent.transcript_path !== undefined || rawEvent.session_id !== undefined) {
+      return { id: 'claude_code', name: AGENT_NAMES.claude_code, source: 'shape' };
+    }
+    return null;
+  } catch { return null; }
+}
+
+/**
+ * 多信号来源识别：显式头 → UA → payload 形状 → 兜底。
+ * rawEvent 可能为 null（body 尚未解析时的降级调用），全程容错，不抛异常。
+ * @param {Request} request - Fetch API Request 对象
+ * @param {object|null} rawEvent - 已解析的请求体（可能为 null）
+ * @returns {{id: string, name: string, source: 'header'|'ua'|'shape'|'fallback'}}
+ */
+export function detectAgent(request, rawEvent) {
+  try {
+    const byHeader = _detectByHeader(request);
+    if (byHeader) return byHeader;
+  } catch { /* 降级到下一层 */ }
+  try {
+    const byUa = _detectByUa(request);
+    if (byUa) return byUa;
+  } catch { /* 降级到下一层 */ }
+  try {
+    const byShape = _detectByShape(rawEvent);
+    if (byShape) return byShape;
+  } catch { /* 降级到兜底 */ }
+  return { id: 'unknown', name: AGENT_NAMES.unknown, source: 'fallback' };
+}
+
+// ============================================================================
 // classifier — 事件分类
 // ============================================================================
 
@@ -646,8 +755,25 @@ const PERM_KW_ZH = ['权限','允许','批准','确认','等待用户','需要�
 // EdgeOne WAF 绕过：动态构建 'PermissionRequest'（WAF 拦截此字符串字面量）
 var _PERM_EVT = String.fromCharCode(80,101,114,109,105,115,115,105,111,110,82,101,113,117,101,115,116);
 
-export function classify(parsed) {
+export function classify(parsed, agentId) {
   const eventName = parsed.event_name || '';
+
+  if (agentId === 'codex') {
+    if (eventName === _PERM_EVT) return 'permission_required';
+    if (eventName === 'Stop') return 'task_done';
+    if (eventName === 'SubagentStop') return 'turn_paused';
+    return 'info';
+  }
+
+  if (agentId === 'antigravity') {
+    if (eventName === 'PreToolUse') return 'permission_required';
+    if (eventName === 'Stop') {
+      return (parsed.raw_event && parsed.raw_event.fullyIdle === false) ? 'turn_paused' : 'task_done';
+    }
+    return 'info';
+  }
+
+  // claude_code / unknown / 未传 agentId：现状完全不变
   if (eventName === _PERM_EVT) return 'permission_required';
   if (eventName === 'Notification') {
     const t = (parsed.text_lower || parsed.raw_text || '').toLowerCase();
@@ -668,13 +794,6 @@ export function classify(parsed) {
 // ============================================================================
 // message-builder — 消息构建
 // ============================================================================
-
-const TITLE_MAP = {
-  'permission_required': 'Claude Code 需要权限',
-  'attention_required': 'Claude Code 需要你',
-  'task_done': 'Claude Code 已完成',
-  'turn_paused': 'Claude Code 本轮结束'
-};
 
 const RISK_MAP = {
   'permission_required': 'high',
@@ -727,16 +846,19 @@ export function assessBashRisk(cmd) {
 export function getRiskLevel(eventType, parsed) {
   if (eventType === 'permission_required' && parsed) {
     var tool = (parsed.tool_name || '').toLowerCase();
-    if (tool === 'bash') {
+    // Bash 命令类（Antigravity 的 run_command 同路）
+    if (tool === 'bash' || tool === 'run_command') {
       var cmd = (parsed.tool_input && parsed.tool_input.command) || '';
       return assessBashRisk(cmd);
     }
-    // 文件读取类工具
-    if (tool === 'read' || tool === 'glob' || tool === 'grep' || tool === 'list') return 'low';
-    // 文件写入类工具
-    if (tool === 'write' || tool === 'edit' || tool === 'multiedit' || tool === 'notebookedit') return 'medium';
-    // WebFetch / WebSearch
-    if (tool === 'webfetch' || tool === 'websearch') return 'low';
+    // 文件读取类工具（含 Antigravity 只读工具）
+    if (tool === 'read' || tool === 'glob' || tool === 'grep' || tool === 'list' ||
+      tool === 'view_file' || tool === 'list_dir' || tool === 'find_by_name' || tool === 'grep_search') return 'low';
+    // 文件写入类工具（含 Antigravity 写入工具）
+    if (tool === 'write' || tool === 'edit' || tool === 'multiedit' || tool === 'notebookedit' ||
+      tool === 'write_to_file' || tool === 'replace_file_content' || tool === 'multi_replace_file_content' || tool === 'apply_patch') return 'medium';
+    // WebFetch / WebSearch（含 Antigravity 网络工具）
+    if (tool === 'webfetch' || tool === 'websearch' || tool === 'search_web' || tool === 'read_url_content') return 'low';
     // 其他未知工具 → medium
     return 'medium';
   }
@@ -744,41 +866,48 @@ export function getRiskLevel(eventType, parsed) {
 }
 
 export function buildMessage(eventType, parsed = null, _d1 = null, _d2 = null, _d3 = null,
-  extraSummary = '', config = null, deviceName = null) {
+  extraSummary = '', config = null, deviceName = null, agentName = 'Claude Code') {
   const personaEnabled = config?.persona?.enabled !== false;
   const userName = personaEnabled ? (config?.persona?.user_name || 'Betsy') : '';
   const device = deviceName || 'Unknown Device';
-  const title = TITLE_MAP[eventType] || 'Claude Code 提醒';
+  let title;
+  if (eventType === 'permission_required') title = `${agentName} 需要权限`;
+  else if (eventType === 'attention_required') title = `${agentName} 需要你`;
+  else if (eventType === 'task_done') title = `${agentName} 已完成`;
+  else if (eventType === 'turn_paused') title = `${agentName} 本轮结束`;
+  else title = `${agentName} 提醒`;
   let body = '';
   switch (eventType) {
     case 'permission_required': {
       const summary = extraSummary || parsed?.summary || '等待用户允许操作';
-      const prefix = userName ? `${userName}，${device} 上的 Claude Code ` : `${device} 上的 Claude Code `;
+      const prefix = userName ? `${userName}，${device} 上的 ${agentName} ` : `${device} 上的 ${agentName} `;
       const fixedText = '需要你允许操作\n操作：';
       const maxLen = 80 - prefix.length - fixedText.length - 3;
       body = `${prefix}${fixedText}${summary.length > maxLen ? summary.slice(0, maxLen) + '...' : summary}`;
       break;
     }
     case 'attention_required': {
-      const notification = parsed?.raw_event?.notification || {};
-      const t = notification.title || notification.message || '请求你的注意';
-      body = userName ? `${userName}，${device} 上的 Claude Code ${t}` : `${device} 上的 Claude Code ${t}`;
+      // Claude Code 的 Notification payload 中 title/message 是顶层字段，不在 notification 子对象里；
+      // 兼容保留 notification.title/message 以防其他来源用了嵌套结构
+      const t = parsed?.raw_event?.title || parsed?.raw_event?.message ||
+        parsed?.raw_event?.notification?.title || parsed?.raw_event?.notification?.message || '请求你的注意';
+      body = userName ? `${userName}，${device} 上的 ${agentName} ${t}` : `${device} 上的 ${agentName} ${t}`;
       if (body.length > 80) body = body.slice(0, 77) + '...';
       break;
     }
     case 'task_done': {
-      body = userName ? `${userName}，${device} 上的 Claude Code 已经完成了任务` : `${device} 上的 Claude Code 已经完成了任务`;
+      body = userName ? `${userName}，${device} 上的 ${agentName} 已经完成了任务` : `${device} 上的 ${agentName} 已经完成了任务`;
       break;
     }
     case 'turn_paused': {
       const bg = parsed?.raw_event?.background_tasks;
       const n = Array.isArray(bg) ? bg.length : 0;
       const suffix = n > 0 ? `本轮结束，仍有 ${n} 个后台任务运行中` : '本轮结束，后台任务运行中';
-      body = userName ? `${userName}，${device} 上的 Claude Code ${suffix}` : `${device} 上的 Claude Code ${suffix}`;
+      body = userName ? `${userName}，${device} 上的 ${agentName} ${suffix}` : `${device} 上的 ${agentName} ${suffix}`;
       break;
     }
     default:
-      body = userName ? `${userName}，${device} 上的 Claude Code 事件` : `${device} 上的 Claude Code 事件`;
+      body = userName ? `${userName}，${device} 上的 ${agentName} 事件` : `${device} 上的 ${agentName} 事件`;
   }
   return { title, body };
 }

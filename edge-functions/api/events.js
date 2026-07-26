@@ -41,6 +41,7 @@ export async function onRequestGet(context) {
     const offset = parseInt(url.searchParams.get('offset') || '0');
     const typeFilter = url.searchParams.get('type') || null;
     const deviceFilter = url.searchParams.get('device') || null;
+    const agentFilter = url.searchParams.get('agent') || null;
 
     // 验证参数
     if (limit < 1 || limit > 100) {
@@ -61,6 +62,7 @@ export async function onRequestGet(context) {
     const filter = {};
     if (typeFilter) filter.type = typeFilter;
     if (deviceFilter) filter.device = deviceFilter;
+    if (agentFilter) filter.agent = agentFilter;
     const result = await getEvents(auth.kv, userId, limit, offset, filter);
 
     return jsonResponse({

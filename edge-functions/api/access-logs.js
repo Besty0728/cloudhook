@@ -36,6 +36,7 @@ export async function onRequestGet(context) {
     const limit = parseInt(url.searchParams.get('limit') || '20');
     const offset = parseInt(url.searchParams.get('offset') || '0');
     const deviceFilter = url.searchParams.get('device') || null;
+    const agentFilter = url.searchParams.get('agent') || null;
 
     if (isNaN(limit) || limit < 1 || limit > 200) {
       return jsonResponse({
@@ -51,7 +52,9 @@ export async function onRequestGet(context) {
       }, 400);
     }
 
-    const filter = deviceFilter ? { device: deviceFilter } : {};
+    const filter = {};
+    if (deviceFilter) filter.device = deviceFilter;
+    if (agentFilter) filter.agent = agentFilter;
     const result = await getAccessLogs(auth.kv, userId, limit, offset, filter);
 
     return jsonResponse({

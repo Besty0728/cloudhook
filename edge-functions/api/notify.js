@@ -29,7 +29,8 @@ import {
   buildMessage,
   getRiskLevel,
   pushBark,
-  safeWaitUntil
+  safeWaitUntil,
+  detectAgent
 } from '../_shared.js';
 
 // ============================================================================
@@ -48,9 +49,22 @@ function jsonResponse(data, status) {
 }
 
 /**
- * 解析 Claude Code hook 事件
+ * Antigravity payload 无事件名字段（无 hook_event_name/hookEventName），
+ * 按 payload 形状推断事件类型，仅作为事件名解析链的兜底层。
  */
-function parseEvent(rawEvent, eventName) {
+export function inferAgEventName(rawEvent) {
+  if (!rawEvent) return '';
+  if (rawEvent.toolCall && typeof rawEvent.stepIdx === 'number') return 'PreToolUse';
+  if (!rawEvent.toolCall && typeof rawEvent.stepIdx === 'number') return 'PostToolUse';
+  if (rawEvent.terminationReason !== undefined && rawEvent.fullyIdle !== undefined) return 'Stop';
+  if (typeof rawEvent.invocationNum === 'number') return 'PreInvocation';
+  return '';
+}
+
+/**
+ * 解析 hook 事件（Claude Code / Codex / Antigravity 通用）
+ */
+export function parseEvent(rawEvent, eventName) {
   var parsed = {
     timestamp: new Date().toISOString(),
     event_name: eventName,
@@ -107,6 +121,21 @@ function parseEvent(rawEvent, eventName) {
   }
   parsed.tool_input = (typeof toolInput === 'object') ? toolInput : {};
 
+  // Antigravity：无 tool_name/tool_input 字段，从 toolCall 映射（camelCase args → snake_case，
+  // 仅映射已知字段，其余 args 原样并入，供后续风险评级等消费）
+  if (!parsed.tool_name && rawEvent.toolCall && rawEvent.toolCall.name) {
+    parsed.tool_name = rawEvent.toolCall.name;
+    var agArgs = rawEvent.toolCall.args || {};
+    var agInput = {};
+    for (var agKey in agArgs) {
+      if (Object.prototype.hasOwnProperty.call(agArgs, agKey)) agInput[agKey] = agArgs[agKey];
+    }
+    if (agArgs.CommandLine !== undefined) agInput.command = agArgs.CommandLine;
+    if (agArgs.TargetFile !== undefined) agInput.file_path = agArgs.TargetFile;
+    if (agArgs.Url !== undefined) agInput.url = agArgs.Url;
+    parsed.tool_input = agInput;
+  }
+
   var command = parsed.tool_input.command || '';
   var filePath = parsed.tool_input.file_path || '';
   var url = parsed.tool_input.url || '';
@@ -135,6 +164,8 @@ export async function onRequestPost(context) {
     var clientIp = getClientIp(request);
     var userAgent = request.headers.get('User-Agent') || '';
     var headerEvent = request.headers.get('X-Hook-Event') || '';
+    // 来源预判：此时 body 尚未解析，仅凭请求头/UA 判定，命中层级至多到 'ua'
+    var preAgent = detectAgent(request, null);
 
     // 被拒绝的请求也写访问日志（异步、不阻塞响应）。此前只有成功请求留痕，
     // token 过期/被吊销时 hook 静默失败（HTTP 仍是 200），完全无从诊断。
@@ -147,7 +178,9 @@ export async function onRequestPost(context) {
         result: extra.result || 'denied',
         reason: reason,
         event_name: headerEvent || undefined,
-        jti: extra.jti || undefined
+        jti: extra.jti || undefined,
+        agent: preAgent.id,
+        agent_source: preAgent.source
       }));
     };
 
@@ -210,19 +243,23 @@ export async function onRequestPost(context) {
 
     // 6. 解析事件
     var rawEvent = await request.json();
+    var agentInfo = detectAgent(request, rawEvent);
     var eventName = (rawEvent && rawEvent.hook_event_name)
       || (rawEvent && rawEvent.hookEventName)
       || request.headers.get('X-Hook-Event')
+      || inferAgEventName(rawEvent)
       || 'Unknown';
     var parsed = parseEvent(rawEvent, eventName);
 
     // 7. 事件分类（_shared.js classify 已用 fromCharCode 绕过 WAF）
-    var eventType = classify(parsed);
+    var eventType = classify(parsed, agentInfo.id);
+    // 旧配置无 agents 段时必须默认启用，不得因缺字段静音
+    var agentEnabled = ((config.agents || {})[agentInfo.id] || {}).enabled !== false;
     // turn_paused：本轮结束但仍有后台任务（subagent 等）——只记日志，不推送
-    var shouldNotify = eventType !== 'turn_paused';
+    var shouldNotify = eventType !== 'turn_paused' && agentEnabled;
 
     // 8. 构建消息
-    var message = buildMessage(eventType, parsed, null, null, null, parsed.summary, config, payload.dev);
+    var message = buildMessage(eventType, parsed, null, null, null, parsed.summary, config, payload.dev, agentInfo.name);
 
     // 9. 异步推送 & 记录（不阻塞响应）。三步各自隔离：任一步失败不吞掉其余步骤
     //    ——此前 pushBark 抛异常会连事件日志一起丢，事件像从未发生过一样无法排查。
@@ -235,7 +272,9 @@ export async function onRequestPost(context) {
           user_agent: userAgent,
           result: 'allowed',
           event_name: eventName,
-          jti: payload.jti
+          jti: payload.jti,
+          agent: agentInfo.id,
+          agent_source: agentInfo.source
         });
       } catch (logErr) { /* 忽略，不影响推送 */ }
 
@@ -243,7 +282,10 @@ export async function onRequestPost(context) {
       // 失败原因写入 push_error（Bark HTTP 错误 / 超时 / key 未配置等），事件页可见。
       var pushed = false;
       var pushError = '';
-      if (shouldNotify) {
+      if (!agentEnabled && eventType !== 'turn_paused') {
+        // 该来源被静音：不进推送分支，仅记录静音原因
+        pushError = 'agent_muted';
+      } else if (shouldNotify) {
         try {
           var barkKey = config.bark_key;
           if (config.bark_key_encrypted && env.ENCRYPTION_KEY) {
@@ -285,9 +327,10 @@ export async function onRequestPost(context) {
           body: message.body,
           risk_level: getRiskLevel(eventType, parsed),
           notified: pushed,
-          push_error: shouldNotify && !pushed ? pushError : undefined,
+          push_error: (!pushed && pushError) ? pushError : undefined,
           token_id: token.slice(0, 8),
-          jti: payload.jti
+          jti: payload.jti,
+          agent: agentInfo.id
         });
       } catch (logErr) { /* 忽略 */ }
     })());
@@ -321,7 +364,7 @@ export async function onRequestOptions() {
     headers: {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-CloudHook-Token, X-Timestamp, X-Signature, X-Hook-Event',
+      'Access-Control-Allow-Headers': 'Content-Type, X-CloudHook-Token, X-Timestamp, X-Signature, X-Hook-Event, X-Agent-Type',
       'Access-Control-Max-Age': '86400'
     }
   });
