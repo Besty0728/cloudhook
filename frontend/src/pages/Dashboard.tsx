@@ -16,14 +16,16 @@ const AGENT_LABEL: Record<string, string> = {
   claude_code: 'Claude Code',
   codex: 'Codex',
   antigravity: 'Antigravity',
+  kimi_code: 'Kimi Code',
   unknown: '其他智能体',
 };
 
-/** 来源色点（与 EventsPage 徽章配色一致：琥珀/翠绿/天蓝/灰） */
+/** 来源色点（与 EventsPage 徽章配色一致：琥珀/翠绿/天蓝/紫/灰） */
 const AGENT_DOT: Record<string, string> = {
   claude_code: 'bg-amber-400',
   codex: 'bg-emerald-400',
   antigravity: 'bg-sky-400',
+  kimi_code: 'bg-violet-400',
   unknown: 'bg-gray-300',
 };
 

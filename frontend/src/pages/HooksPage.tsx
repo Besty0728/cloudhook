@@ -1,20 +1,22 @@
 /**
  * Hooks 配置页面
  *
- * 指导用户为 Claude Code / Codex CLI / Antigravity CLI 配置 hook，使各智能体的
- * 生命周期事件携带设备 Token 到达 CloudHook 端点，由后端识别来源、分类并经 Bark
- * 推送到 iPhone / Apple Watch。
+ * 指导用户为 Claude Code / Codex CLI / Antigravity CLI / Kimi Code CLI 配置 hook，
+ * 使各智能体的生命周期事件携带设备 Token 到达 CloudHook 端点，由后端识别来源、
+ * 分类并经 Bark 推送到 iPhone / Apple Watch。
  *
  * 链路：智能体事件 → POST /api/hook（X-CloudHook-Token，可选 X-Agent-Type）→ 来源识别 / 分类 / 策略 → Bark 通知
  *
  * - Claude Code 原生支持 http hook，事件直接 POST 到端点
- * - Codex CLI / Antigravity CLI 仅支持 command 型 hook，但 command 可内联 curl 读
- *   stdin（--data-binary @-）直接转发，配置是纯 JSON，无需独立脚本文件
+ * - Codex CLI / Antigravity CLI / Kimi Code CLI 仅支持 command 型 hook，但 command
+ *   可内联 curl 读 stdin（--data-binary @-）直接转发，配置是纯 JSON / TOML，
+ *   无需独立脚本文件
  *
  * 说明文档参考：
  *   https://code.claude.com/docs/zh-CN/hooks
  *   https://developers.openai.com/codex/hooks
  *   https://antigravity.google/docs/hooks
+ *   https://www.kimi.com/code/docs/kimi-code-cli/customization/hooks.html
  * 鉴权说明：/api/hook 仅校验 X-CloudHook-Token（本身为 HMAC 签名令牌，自验证防伪造），
  *           无需在客户端实时计算请求签名，因此转发脚本无需额外签名逻辑。
  */
@@ -31,12 +33,13 @@ import { Copy, Check, AlertTriangle } from 'lucide-react';
 // 只有 atob 这类环境全局函数不会被求值——解码结果即 Permission+Request 连写
 const PERM_EVENT = atob('UGVybWlzc2lvblJlcXVlc3Q=');
 
-type AgentTab = 'claude_code' | 'codex' | 'antigravity';
+type AgentTab = 'claude_code' | 'codex' | 'antigravity' | 'kimi_code';
 
 const TABS: { key: AgentTab; label: string }[] = [
   { key: 'claude_code', label: 'Claude Code' },
   { key: 'codex', label: 'Codex' },
   { key: 'antigravity', label: 'Antigravity' },
+  { key: 'kimi_code', label: 'Kimi Code' },
 ];
 
 type CopyFn = (text: string, key: string) => void;
@@ -423,6 +426,128 @@ function AntigravityTab({
   );
 }
 
+// ─── 页签 4：Kimi Code ──────────────────────────────────────────────────────
+
+function KimiCodeTab({
+  endpoint,
+  tokenValue,
+  copied,
+  copy,
+}: {
+  endpoint: string;
+  tokenValue: string;
+  copied: string | null;
+  copy: CopyFn;
+}) {
+  // 内联 curl（同 Codex 页签，零脚本）。Kimi Code 的事件 JSON（snake_case，
+  // 含 hook_event_name）经 stdin 传入，--data-binary @- 直接转发。
+  // Stop 是可阻断事件、同步等待 hook 完成才结束回合，故 -m 8 设短超时；
+  // stdout 必须重定向丢弃——若输出 JSON 可能被当成 hookSpecificOutput 决策解析。
+  const kimiCurl = `curl -sS -m 8 -X POST '${endpoint}' -H 'Content-Type: application/json' -H 'X-CloudHook-Token: ${tokenValue}' -H 'X-Agent-Type: kimi_code' --data-binary @- >/dev/null 2>&1 || true`;
+
+  // TOML 基本字符串里 \\ 表示一个反斜杠：产物文本须是 task\\.(completed|failed)，
+  // 故 JS 模板字符串里写四个反斜杠
+  const kimiConfigToml = `[[hooks]]
+event = "${PERM_EVENT}"
+command = "${kimiCurl}"
+timeout = 10
+
+[[hooks]]
+event = "Stop"
+command = "${kimiCurl}"
+timeout = 10
+
+[[hooks]]
+event = "Notification"
+matcher = "task\\\\.(completed|failed)"
+command = "${kimiCurl}"
+timeout = 10`;
+
+  return (
+    <>
+      {/* 说明 */}
+      <div className="mb-8 bg-gradient-to-r from-gray-50 to-stone-50 border border-gray-200 rounded-2xl p-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-3 tracking-tight">📝 配置步骤</h2>
+        <div className="space-y-2 text-sm text-gray-700 tracking-wide">
+          <p>
+            Kimi Code 的 hook 写在 <code className="px-2 py-0.5 bg-gray-200 rounded">~/.kimi-code/config.toml</code> 的
+            <code className="px-2 py-0.5 bg-gray-200 rounded">[[hooks]]</code> TOML 数组里，只支持
+            <code className="px-2 py-0.5 bg-gray-200 rounded">command</code> 型 hook。事件 JSON 经 stdin 传入
+            （snake_case，含 <code className="px-2 py-0.5 bg-gray-200 rounded">hook_event_name</code>），command 里内联 curl 用
+            <code className="px-2 py-0.5 bg-gray-200 rounded">--data-binary @-</code> 读 stdin 直接转发即可，<strong>无需任何脚本文件</strong>。
+          </p>
+          <p>1. 打开或新建 <code className="px-2 py-0.5 bg-gray-200 rounded">~/.kimi-code/config.toml</code>，把下方 <code className="px-2 py-0.5 bg-gray-200 rounded">[[hooks]]</code> 段追加进去——端点和 Token 已自动填好</p>
+          <p>2. 注意每条 <code className="px-2 py-0.5 bg-gray-200 rounded">[[hooks]]</code> 规则只允许 <code className="px-2 py-0.5 bg-gray-200 rounded">event</code> / <code className="px-2 py-0.5 bg-gray-200 rounded">matcher</code> / <code className="px-2 py-0.5 bg-gray-200 rounded">command</code> / <code className="px-2 py-0.5 bg-gray-200 rounded">timeout</code> 四个字段，<strong>多写字段会导致配置加载失败</strong></p>
+          <p>3. Windows 环境把命令中的 <code className="px-2 py-0.5 bg-gray-200 rounded">curl</code> 与 <code className="px-2 py-0.5 bg-gray-200 rounded">/dev/null</code> 分别换成 <code className="px-2 py-0.5 bg-gray-200 rounded">curl.exe</code> 与 <code className="px-2 py-0.5 bg-gray-200 rounded">NUL</code></p>
+          <p>4. 保存后触发一次 Kimi Code 事件（如请求一次权限或完成一轮响应），确认 Bark 收到推送</p>
+        </div>
+      </div>
+
+      <CodeBlockCard
+        title="config.toml 配置"
+        subtitle="注册权限请求、Stop 与后台任务状态三类事件；command 内联 curl 读 stdin 直接转发"
+        badge="~/.kimi-code/config.toml"
+        code={kimiConfigToml}
+        copyKey="kimi-toml"
+        copied={copied}
+        onCopy={copy}
+      />
+
+      {/* 事件映射说明 */}
+      <div className="mb-6 bg-white/80 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
+          <h3 className="text-lg font-semibold text-gray-900 tracking-tight">事件类型说明</h3>
+          <p className="text-sm text-gray-600 mt-0.5 tracking-wide">CloudHook 后端如何处理各 Kimi Code 事件</p>
+        </div>
+        <div className="p-6 overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead>
+              <tr className="text-gray-500 border-b border-gray-200">
+                <th className="pb-2 pr-4 font-medium">Kimi Code 事件</th>
+                <th className="pb-2 pr-4 font-medium">触发时机</th>
+                <th className="pb-2 font-medium">到达后处理</th>
+              </tr>
+            </thead>
+            <tbody className="text-gray-700">
+              <tr className="border-b border-gray-100">
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">{PERM_EVENT}</code></td>
+                <td className="py-2 pr-4">Kimi 请求工具调用权限</td>
+                <td className="py-2"><span className="text-emerald-600 font-medium">推送通知</span>（需要权限）</td>
+              </tr>
+              <tr className="border-b border-gray-100">
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">Stop</code></td>
+                <td className="py-2 pr-4">Kimi 完成本轮响应</td>
+                <td className="py-2"><span className="text-emerald-600 font-medium">推送通知</span>（已完成）</td>
+              </tr>
+              <tr className="border-b border-gray-100">
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">StopFailure</code></td>
+                <td className="py-2 pr-4">回合异常终止</td>
+                <td className="py-2"><span className="text-emerald-600 font-medium">推送通知</span>（需要你，回合异常终止）</td>
+              </tr>
+              <tr className="border-b border-gray-100">
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">SubagentStop</code></td>
+                <td className="py-2 pr-4">子代理任务结束</td>
+                <td className="py-2"><span className="text-gray-500 font-medium">只记日志</span>（本轮结束）</td>
+              </tr>
+              <tr>
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">Notification</code>（task.*）</td>
+                <td className="py-2 pr-4">后台任务状态变化</td>
+                <td className="py-2"><span className="text-emerald-600 font-medium">按状态推送</span>：failed 推「需要你」、completed 推「已完成」</td>
+              </tr>
+            </tbody>
+          </table>
+          <p className="text-xs text-gray-500 mt-3 tracking-wide">
+            注意：Kimi 的 <code className="px-1 py-0.5 bg-gray-100 rounded">Notification</code> 是<strong>后台任务状态变化</strong>（与 Claude Code 语义不同），
+            matcher 建议 <code className="px-1 py-0.5 bg-gray-100 rounded">{'task\\.(completed|failed)'}</code>，该段为可选、嫌吵可整段去掉。
+            <code className="px-1 py-0.5 bg-gray-100 rounded">Stop</code> 是可阻断事件、同步等待 hook 完成才结束回合，务必给 curl 设短超时（示例为 -m 8）；
+            hook 非零退出 fail-open 不影响使用。
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ─── 主页面组件 ──────────────────────────────────────────────────────────────
 
 export default function HooksPage() {
@@ -449,11 +574,11 @@ export default function HooksPage() {
           Hook 配置
         </h1>
         <p className="text-gray-600 tracking-wide">
-          为 Claude Code / Codex CLI / Antigravity CLI 配置事件推送，携带 Token 直推 CloudHook，再经 Bark 通知你
+          为 Claude Code / Codex CLI / Antigravity CLI / Kimi Code CLI 配置事件推送，携带 Token 直推 CloudHook，再经 Bark 通知你
         </p>
       </div>
 
-      {/* 链路说明（三家智能体共用） */}
+      {/* 链路说明（四家智能体共用） */}
       <div className="mb-8 bg-gradient-to-r from-gray-50 to-stone-50 border border-gray-200 rounded-2xl p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-3 tracking-tight">🔗 工作原理</h2>
         <div className="flex flex-wrap items-center gap-2 text-sm text-gray-700 tracking-wide">
@@ -466,7 +591,7 @@ export default function HooksPage() {
           <span className="px-3 py-1.5 bg-white rounded-lg border border-gray-200 font-medium">Bark 推送到你的设备</span>
         </div>
         <p className="text-sm text-gray-600 mt-3 tracking-wide">
-          智能体（Claude Code / Codex CLI / Antigravity CLI 等）在生命周期事件触发时，把事件 JSON POST 到 CloudHook 端点，
+          智能体（Claude Code / Codex CLI / Antigravity CLI / Kimi Code CLI 等）在生命周期事件触发时，把事件 JSON POST 到 CloudHook 端点，
           请求头携带你的设备 Token 完成鉴权。CloudHook 会自动识别事件来源（显式头 → UA → payload 特征），
           据此生成对应的通知文案；凡到达端点的事件，后端都会识别类型并经 Bark 通知你，推送哪些事件由你注册的 hook 决定。
         </p>
@@ -528,6 +653,7 @@ export default function HooksPage() {
       {activeTab === 'claude_code' && <ClaudeCodeTab endpoint={endpoint} tokenValue={tokenValue} copied={copied} copy={copy} />}
       {activeTab === 'codex' && <CodexTab endpoint={endpoint} tokenValue={tokenValue} copied={copied} copy={copy} />}
       {activeTab === 'antigravity' && <AntigravityTab endpoint={endpoint} tokenValue={tokenValue} copied={copied} copy={copy} />}
+      {activeTab === 'kimi_code' && <KimiCodeTab endpoint={endpoint} tokenValue={tokenValue} copied={copied} copy={copy} />}
 
       {/* 底部提示（页签外共用） */}
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6">

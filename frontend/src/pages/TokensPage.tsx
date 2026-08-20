@@ -19,6 +19,8 @@ import { getDevices, revokeDevice, createDevice, revealDeviceToken, renameDevice
 import { Device } from '@/types/api';
 import { formatDateTime, formatRelativeTime } from '@/utils/format';
 import { hashPassword } from '@/utils/passwordHash';
+import { getKnownDeviceJti } from '@/utils/deviceId';
+import { useAuthStore } from '@/store/authStore';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import { Button, ConfirmDialog, StatusBadge, EmptyState, Input } from '@/components/ui';
 import { Plus, Copy, Check, Eye, X, ChevronDown, Pencil, Clock } from 'lucide-react';
@@ -813,6 +815,12 @@ export default function TokensPage() {
   // 修改有效期成功 → 更新 token 缓存、刷新列表
   const handleTtlUpdated = useCallback((jti: string, _newExp: number, newToken: string) => {
     setTokenCache((prev) => ({ ...prev, [jti]: newToken }));
+    // PATCH 改有效期会重签 token；HooksPage 指引与 apiClient 鉴权读的是 authStore
+    // 快照，当前设备必须回写，否则指引永远展示旧 token。
+    // 不传 passwordHash：setToken 的该参数可选，不传不会覆盖/清除已存哈希。
+    if (jti === getKnownDeviceJti()) {
+      useAuthStore.getState().setToken(newToken);
+    }
     setNewTokenJti(jti);
     setExpandedJti(jti);
     addToast('success', '有效期已更新');
@@ -842,6 +850,12 @@ export default function TokensPage() {
       const res = await revealDeviceToken(jti);
       if (res.success !== false && res.token) {
         setTokenCache((prev) => ({ ...prev, [jti]: res.token }));
+        // reveal 返回的是注册表确定性重算的 canonical token；若当前设备的
+        // authStore 快照与之不同（历史漂移，如改有效期后未回写的旧版本残留），
+        // 借机回写自愈，保证 HooksPage 指引与 apiClient 鉴权用到最新 token
+        if (jti === getKnownDeviceJti() && res.token !== useAuthStore.getState().token) {
+          useAuthStore.getState().setToken(res.token);
+        }
         setNewTokenJti(null);
         setExpandedJti(jti);
       } else {

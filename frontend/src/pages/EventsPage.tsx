@@ -33,6 +33,7 @@ const AGENT_OPTIONS: { label: string; value: string }[] = [
   { label: 'Claude Code', value: 'claude_code' },
   { label: 'Codex', value: 'codex' },
   { label: 'Antigravity', value: 'antigravity' },
+  { label: 'Kimi Code', value: 'kimi_code' },
   { label: '其他', value: 'unknown' },
 ];
 
@@ -41,6 +42,7 @@ const AGENT_LABEL: Record<string, string> = {
   claude_code: 'Claude Code',
   codex: 'Codex',
   antigravity: 'Antigravity',
+  kimi_code: 'Kimi Code',
   unknown: '其他智能体',
 };
 
@@ -49,6 +51,7 @@ const AGENT_BADGE_STYLE: Record<string, string> = {
   claude_code: 'bg-amber-50 text-amber-700 border-amber-200',
   codex: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   antigravity: 'bg-sky-50 text-sky-700 border-sky-200',
+  kimi_code: 'bg-violet-50 text-violet-700 border-violet-200',
   unknown: 'bg-gray-100 text-gray-600 border-gray-200',
 };
 

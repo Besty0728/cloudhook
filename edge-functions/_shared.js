@@ -246,6 +246,7 @@ export function getDefaultConfig() {
       claude_code: { enabled: true },
       codex: { enabled: true },
       antigravity: { enabled: true },
+      kimi_code: { enabled: true },
       unknown: { enabled: true }
     }
   };
@@ -651,6 +652,7 @@ export const AGENT_NAMES = {
   claude_code: 'Claude Code',
   codex: 'Codex',
   antigravity: 'Antigravity',
+  kimi_code: 'Kimi Code',
   unknown: '其他智能体'
 };
 
@@ -661,6 +663,7 @@ function _normalizeAgentId(raw) {
     if (v === 'claude' || v === 'claudecode' || v === 'claude_code') return 'claude_code';
     if (v === 'codex' || v === 'codex_cli') return 'codex';
     if (v === 'antigravity' || v === 'agy' || v === 'gemini') return 'antigravity';
+    if (v === 'kimi' || v === 'kimicode' || v === 'kimi_code' || v === 'kimi_code_cli') return 'kimi_code';
     return null;
   } catch { return null; }
 }
@@ -686,6 +689,7 @@ function _detectByUa(request) {
     if (ua.includes('claude')) return { id: 'claude_code', name: AGENT_NAMES.claude_code, source: 'ua' };
     if (ua.includes('codex')) return { id: 'codex', name: AGENT_NAMES.codex, source: 'ua' };
     if (ua.includes('antigravity') || ua.includes('gemini')) return { id: 'antigravity', name: AGENT_NAMES.antigravity, source: 'ua' };
+    if (ua.includes('kimi')) return { id: 'kimi_code', name: AGENT_NAMES.kimi_code, source: 'ua' };
     return null;
   } catch { return null; }
 }
@@ -695,6 +699,14 @@ function _detectByUa(request) {
 function _detectByShape(rawEvent) {
   try {
     if (!rawEvent || typeof rawEvent !== 'object') return null;
+
+    // Kimi Code：hooks runner 给每个 payload 注入 client_type，一锤定音。
+    // 必须先于 codex 判据——Kimi 的 TurnStarted/PermissionRequest 带 turn_id、
+    // SessionStart 带 model，落到 codex 判据会被误判为 Codex
+    if (rawEvent.client_type === 'kimi_code_cli') {
+      return { id: 'kimi_code', name: AGENT_NAMES.kimi_code, source: 'shape' };
+    }
+
     if (rawEvent.conversationId !== undefined && (
       rawEvent.toolCall !== undefined ||
       rawEvent.terminationReason !== undefined ||
@@ -762,6 +774,22 @@ export function classify(parsed, agentId) {
     if (eventName === _PERM_EVT) return 'permission_required';
     if (eventName === 'Stop') return 'task_done';
     if (eventName === 'SubagentStop') return 'turn_paused';
+    return 'info';
+  }
+
+  if (agentId === 'kimi_code') {
+    if (eventName === _PERM_EVT) return 'permission_required';
+    if (eventName === 'Stop') return 'task_done';
+    if (eventName === 'SubagentStop') return 'turn_paused';
+    if (eventName === 'StopFailure' || eventName === 'PostToolUseFailure') return 'attention_required';
+    if (eventName === 'Notification') {
+      // Kimi 的 Notification 是后台任务状态变化（task.completed/task.failed 等），
+      // 语义与 Claude Code 的 Notification（权限/空闲提醒）完全不同，不走关键词扫描
+      const nt = String((parsed.raw_event && parsed.raw_event.notification_type) || '');
+      if (nt.includes('failed')) return 'attention_required';
+      if (nt.includes('completed')) return 'task_done';
+      return 'info';
+    }
     return 'info';
   }
 

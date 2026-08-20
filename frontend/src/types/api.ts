@@ -3,8 +3,8 @@
  * 严格对齐 .dev/API_CONTRACT.md
  */
 
-/** 事件来源智能体：claude_code / codex / antigravity 为已识别来源，unknown 为兜底 */
-export type AgentId = 'claude_code' | 'codex' | 'antigravity' | 'unknown';
+/** 事件来源智能体：claude_code / codex / antigravity / kimi_code 为已识别来源，unknown 为兜底 */
+export type AgentId = 'claude_code' | 'codex' | 'antigravity' | 'kimi_code' | 'unknown';
 
 export interface Config {
   bark_key: string;

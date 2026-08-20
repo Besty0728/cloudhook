@@ -222,28 +222,42 @@ export async function onRequestPatch(context) {
       const device = devices[idx];
       // 新有效期：永久=0，否则从当前时间计算
       const newExp = ttl === 0 ? 0 : Math.floor(Date.now() / 1000) + ttl;
+
+      // 固化 iat：规则与 onRequestGet（reveal）完全一致——优先入库 iat，缺失时
+      // 从 created_at 推导，再缺失用当前时间。iat 必须落库，否则 reveal/重登按
+      // 注册表重算时复现不出本次返回的 token（同一设备发散出多个合法 token）
+      let iat = device.iat;
+      if (!iat) {
+        iat = device.created_at
+          ? Math.floor(new Date(device.created_at).getTime() / 1000)
+          : Math.floor(Date.now() / 1000);
+      }
+
+      // 改名判定提前：如果同时传了 device_name，先落库再签名——签名必须用
+      // 落库后的最终设备名，否则 reveal 会用新名重算出另一个 token
+      if (newName && newName.length <= 50) {
+        devices[idx].device_name = newName;
+      }
+      const finalName = devices[idx].device_name || 'Unknown Device';
+
+      // exp/iat/改名合并为一次写入
       devices[idx].exp = newExp;
+      devices[idx].iat = iat;
       await kv.put('user_' + userId + '_devices', JSON.stringify(devices));
 
-      // 用新 exp 重新签发 token
+      // 用落库后的 iat/exp/设备名重新签发 token（与 reveal 的重算规则一致）
       const payload = buildTokenPayload(userId, {
-        iat: device.iat,
+        iat,
         exp: newExp,
-        deviceName: device.device_name || 'Unknown Device',
+        deviceName: finalName,
         jti: targetJti
       });
       const newToken = await signTokenPayload(payload, env.HMAC_SECRET);
 
-      // 如果同时传了 device_name，也一并更新
-      if (newName && newName.length <= 50) {
-        devices[idx].device_name = newName;
-        await kv.put('user_' + userId + '_devices', JSON.stringify(devices));
-      }
-
       return jsonResponse({
         success: true,
         jti: targetJti,
-        device_name: newName || device.device_name,
+        device_name: finalName,
         token: newToken,
         exp: newExp,
         expires_at: newExp > 0 ? new Date(newExp * 1000).toISOString() : null,

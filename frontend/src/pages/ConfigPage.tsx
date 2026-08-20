@@ -135,6 +135,7 @@ export default function ConfigPage() {
   const [agentClaudeCodeEnabled, setAgentClaudeCodeEnabled] = useState(true);
   const [agentCodexEnabled, setAgentCodexEnabled] = useState(true);
   const [agentAntigravityEnabled, setAgentAntigravityEnabled] = useState(true);
+  const [agentKimiCodeEnabled, setAgentKimiCodeEnabled] = useState(true);
   const [agentUnknownEnabled, setAgentUnknownEnabled] = useState(true);
   const [savingAgents, setSavingAgents] = useState(false);
 
@@ -169,6 +170,7 @@ export default function ConfigPage() {
       setAgentClaudeCodeEnabled(cfg.agents?.claude_code?.enabled ?? true);
       setAgentCodexEnabled(cfg.agents?.codex?.enabled ?? true);
       setAgentAntigravityEnabled(cfg.agents?.antigravity?.enabled ?? true);
+      setAgentKimiCodeEnabled(cfg.agents?.kimi_code?.enabled ?? true);
       setAgentUnknownEnabled(cfg.agents?.unknown?.enabled ?? true);
 
       // 风控
@@ -261,11 +263,12 @@ export default function ConfigPage() {
   const handleSaveAgents = () =>
     doSave(
       {
-        // 后端顶层浅合并：agents 子树会被整体替换，四个 key 必须全部带上
+        // 后端顶层浅合并：agents 子树会被整体替换，五个 key 必须全部带上
         agents: {
           claude_code: { enabled: agentClaudeCodeEnabled },
           codex: { enabled: agentCodexEnabled },
           antigravity: { enabled: agentAntigravityEnabled },
+          kimi_code: { enabled: agentKimiCodeEnabled },
           unknown: { enabled: agentUnknownEnabled },
         },
       },
@@ -439,6 +442,13 @@ export default function ConfigPage() {
               <p className="text-xs text-gray-500 mt-0.5 tracking-wide">关闭后该来源事件只记日志、不推送 Bark</p>
             </div>
             <UiverseToggle checked={agentAntigravityEnabled} onChange={setAgentAntigravityEnabled} />
+          </div>
+          <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
+            <div>
+              <p className="text-sm font-medium text-gray-800 tracking-wide">Kimi Code</p>
+              <p className="text-xs text-gray-500 mt-0.5 tracking-wide">关闭后该来源事件只记日志、不推送 Bark</p>
+            </div>
+            <UiverseToggle checked={agentKimiCodeEnabled} onChange={setAgentKimiCodeEnabled} />
           </div>
           <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
             <div>
