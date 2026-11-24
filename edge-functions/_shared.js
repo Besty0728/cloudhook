@@ -711,7 +711,10 @@ function _detectByShape(rawEvent) {
       rawEvent.toolCall !== undefined ||
       rawEvent.terminationReason !== undefined ||
       rawEvent.invocationNum !== undefined ||
-      rawEvent.stepIdx !== undefined
+      rawEvent.stepIdx !== undefined ||
+      rawEvent.hookEventName !== undefined ||
+      rawEvent.workspacePaths !== undefined ||
+      rawEvent.artifactDirectoryPath !== undefined
     )) {
       return { id: 'antigravity', name: AGENT_NAMES.antigravity, source: 'shape' };
     }
@@ -757,6 +760,50 @@ export function detectAgent(request, rawEvent) {
 }
 
 // ============================================================================
+// bash-risk — Bash 命令风险评级（置于 classifier 之前，避免 const TDZ）
+// ============================================================================
+
+// 只读 Bash 命令（低风险）
+const SAFE_CMDS = ['ls','cat','head','tail','find','grep','wc','which','echo','printf',
+  'date','pwd','whoami','uname','hostname','env','printenv','df','du','file','stat',
+  'git status','git log','git diff','git show','git branch','git remote','git tag',
+  'npm list','npm ls','npm view','node -v','python --version','pip list'];
+
+// 中等风险命令（修改但不破坏性）
+const MEDIUM_CMDS = ['cp','mkdir','touch','ln','rename','sort','uniq','tee','xargs',
+  'chmod','chown','chgrp','pip install','npm install','apt install','yum install',
+  'brew install','mv','git checkout','git switch','git merge','git rebase',
+  'git stash','git add','git commit','docker run','docker build',
+  'docker compose up','systemctl restart','systemctl reload',
+  'tar','gzip','gunzip','zip','unzip','curl','wget','ssh','scp','rsync'];
+
+export function assessBashRisk(cmd) {
+  var c = String(cmd || '').trim().toLowerCase();
+  // sudo → critical
+  if (/\bsudo\b/.test(c)) return 'critical';
+  // rm -rf 危险路径 → critical
+  if (/rm\s+.*-[a-z]*r[a-z]*f/.test(c) && /\/\s|\/\.\.\s|\*\s|\.\.\//.test(c)) return 'critical';
+  // 危险操作 → high
+  if (/\b(rm|kill|killall|pkill|dd|mkfs|fdisk|shutdown|reboot|halt|poweroff)\b/.test(c)) return 'high';
+  // curl/wget 管道到 sh → high
+  if (/(curl|wget).*\|\s*(ba)?sh/.test(c)) return 'high';
+  // git push --force → high
+  if (/git\s+push.*--force/.test(c)) return 'high';
+  // npm publish → high
+  if (/npm\s+publish/.test(c)) return 'high';
+  // 中等风险命令
+  for (var i = 0; i < MEDIUM_CMDS.length; i++) {
+    if (c.startsWith(MEDIUM_CMDS[i])) return 'medium';
+  }
+  // 只读命令 → low
+  for (var j = 0; j < SAFE_CMDS.length; j++) {
+    if (c.startsWith(SAFE_CMDS[j])) return 'low';
+  }
+  // 未知命令 → medium（保守估计）
+  return 'medium';
+}
+
+// ============================================================================
 // classifier — 事件分类
 // ============================================================================
 
@@ -766,6 +813,17 @@ const PERM_KW_ZH = ['权限','允许','批准','确认','等待用户','需要�
 
 // EdgeOne WAF 绕过：动态构建 'PermissionRequest'（WAF 拦截此字符串字面量）
 var _PERM_EVT = String.fromCharCode(80,101,114,109,105,115,115,105,111,110,82,101,113,117,101,115,116);
+
+const AG_WRITE_TOOLS = new Set([
+  'write_file', 'write_to_file', 'edit_file', 'replace_file_content', 'multi_replace_file_content'
+]);
+
+function _hasRequestFeedback(args) {
+  return !!(args && (
+    (args.ArtifactMetadata && args.ArtifactMetadata.RequestFeedback === true) ||
+    (args.artifactMetadata && args.artifactMetadata.requestFeedback === true)
+  ));
+}
 
 export function classify(parsed, agentId) {
   const eventName = parsed.event_name || '';
@@ -794,9 +852,30 @@ export function classify(parsed, agentId) {
   }
 
   if (agentId === 'antigravity') {
-    if (eventName === 'PreToolUse') return 'permission_required';
+    if (eventName === 'PreToolUse') {
+      const tool = (parsed.tool_name || '').toLowerCase();
+      const args = parsed.tool_input || {};
+      if (tool === 'ask_permission') return 'permission_required';
+      if (tool === 'ask_question') return 'attention_required';
+      if (AG_WRITE_TOOLS.has(tool) && _hasRequestFeedback(args)) return 'attention_required';
+      if (tool === 'run_command') {
+        const risk = assessBashRisk(args.command || args.CommandLine || '');
+        return (risk === 'high' || risk === 'critical') ? 'permission_required' : 'info';
+      }
+      return 'info';
+    }
     if (eventName === 'Stop') {
-      return (parsed.raw_event && parsed.raw_event.fullyIdle === false) ? 'turn_paused' : 'task_done';
+      const raw = parsed.raw_event || {};
+      if (raw.fullyIdle === false) return 'turn_paused';
+      const reason = String(raw.terminationReason || '').toUpperCase();
+      const errStr = String(raw.error || '').trim();
+      if (reason === 'USER_CANCELED' || reason === 'TERMINAL_CUSTOM_HOOK') return 'info';
+      if (errStr || reason === 'ERROR' || reason === 'MAX_INVOCATIONS' ||
+        reason === 'MAX_FORCED_INVOCATIONS' || reason === 'MAX_STEPS_EXCEEDED' ||
+        reason === 'MAX_TOKEN_BUDGET_EXCEEDED' || reason === 'TERMINAL_STEP_TYPE') {
+        return 'attention_required';
+      }
+      return 'task_done';
     }
     return 'info';
   }
@@ -831,46 +910,6 @@ const RISK_MAP = {
   'info': 'low'
 };
 
-// 只读 Bash 命令（低风险）
-const SAFE_CMDS = ['ls','cat','head','tail','find','grep','wc','which','echo','printf',
-  'date','pwd','whoami','uname','hostname','env','printenv','df','du','file','stat',
-  'git status','git log','git diff','git show','git branch','git remote','git tag',
-  'npm list','npm ls','npm view','node -v','python --version','pip list'];
-
-// 中等风险命令（修改但不破坏性）
-const MEDIUM_CMDS = ['cp','mkdir','touch','ln','rename','sort','uniq','tee','xargs',
-  'chmod','chown','chgrp','pip install','npm install','apt install','yum install',
-  'brew install','mv','git checkout','git switch','git merge','git rebase',
-  'git stash','git add','git commit','docker run','docker build',
-  'docker compose up','systemctl restart','systemctl reload',
-  'tar','gzip','gunzip','zip','unzip','curl','wget','ssh','scp','rsync'];
-
-export function assessBashRisk(cmd) {
-  var c = cmd.trim().toLowerCase();
-  // sudo → critical
-  if (/\bsudo\b/.test(c)) return 'critical';
-  // rm -rf 危险路径 → critical
-  if (/rm\s+.*-[a-z]*r[a-z]*f/.test(c) && /\/\s|\/\.\.\s|\*\s|\.\.\//.test(c)) return 'critical';
-  // 危险操作 → high
-  if (/\b(rm|kill|killall|pkill|dd|mkfs|fdisk|shutdown|reboot|halt|poweroff)\b/.test(c)) return 'high';
-  // curl/wget 管道到 sh → high
-  if (/(curl|wget).*\|\s*(ba)?sh/.test(c)) return 'high';
-  // git push --force → high
-  if (/git\s+push.*--force/.test(c)) return 'high';
-  // npm publish → high
-  if (/npm\s+publish/.test(c)) return 'high';
-  // 中等风险命令
-  for (var i = 0; i < MEDIUM_CMDS.length; i++) {
-    if (c.startsWith(MEDIUM_CMDS[i])) return 'medium';
-  }
-  // 只读命令 → low
-  for (var j = 0; j < SAFE_CMDS.length; j++) {
-    if (c.startsWith(SAFE_CMDS[j])) return 'low';
-  }
-  // 未知命令 → medium（保守估计）
-  return 'medium';
-}
-
 export function getRiskLevel(eventType, parsed) {
   if (eventType === 'permission_required' && parsed) {
     var tool = (parsed.tool_name || '').toLowerCase();
@@ -879,16 +918,23 @@ export function getRiskLevel(eventType, parsed) {
       var cmd = (parsed.tool_input && parsed.tool_input.command) || '';
       return assessBashRisk(cmd);
     }
+    if (tool === 'ask_permission') return 'high';
     // 文件读取类工具（含 Antigravity 只读工具）
     if (tool === 'read' || tool === 'glob' || tool === 'grep' || tool === 'list' ||
-      tool === 'view_file' || tool === 'list_dir' || tool === 'find_by_name' || tool === 'grep_search') return 'low';
+      tool === 'read_file' || tool === 'view_file' || tool === 'list_dir' || tool === 'find_by_name' || tool === 'grep_search') return 'low';
     // 文件写入类工具（含 Antigravity 写入工具）
     if (tool === 'write' || tool === 'edit' || tool === 'multiedit' || tool === 'notebookedit' ||
-      tool === 'write_to_file' || tool === 'replace_file_content' || tool === 'multi_replace_file_content' || tool === 'apply_patch') return 'medium';
+      tool === 'write_file' || tool === 'edit_file' || tool === 'write_to_file' || tool === 'replace_file_content' || tool === 'multi_replace_file_content' || tool === 'apply_patch') return 'medium';
     // WebFetch / WebSearch（含 Antigravity 网络工具）
     if (tool === 'webfetch' || tool === 'websearch' || tool === 'search_web' || tool === 'read_url_content') return 'low';
     // 其他未知工具 → medium
     return 'medium';
+  }
+  if (eventType === 'attention_required' && parsed) {
+    var raw = parsed.raw_event || {};
+    if (String(raw.error || '').trim() || String(raw.terminationReason || '').toUpperCase() === 'ERROR') {
+      return 'high';
+    }
   }
   return RISK_MAP[eventType] || 'low';
 }
@@ -910,15 +956,43 @@ export function buildMessage(eventType, parsed = null, _d1 = null, _d2 = null, _
       const summary = extraSummary || parsed?.summary || '等待用户允许操作';
       const prefix = userName ? `${userName}，${device} 上的 ${agentName} ` : `${device} 上的 ${agentName} `;
       const fixedText = '需要你允许操作\n操作：';
-      const maxLen = 80 - prefix.length - fixedText.length - 3;
+      const maxLen = Math.max(10, 80 - prefix.length - fixedText.length - 3);
       body = `${prefix}${fixedText}${summary.length > maxLen ? summary.slice(0, maxLen) + '...' : summary}`;
       break;
     }
     case 'attention_required': {
+      const raw = parsed?.raw_event || {};
+      const ti = parsed?.tool_input || {};
+      const tool = (parsed?.tool_name || '').toLowerCase();
+      const agMeta = ti.ArtifactMetadata || ti.artifactMetadata;
+      const hasReqFeedback = _hasRequestFeedback(ti);
       // Claude Code 的 Notification payload 中 title/message 是顶层字段，不在 notification 子对象里；
       // 兼容保留 notification.title/message 以防其他来源用了嵌套结构
-      const t = parsed?.raw_event?.title || parsed?.raw_event?.message ||
-        parsed?.raw_event?.notification?.title || parsed?.raw_event?.notification?.message || '请求你的注意';
+      let t = raw.title || raw.message || raw.notification?.title || raw.notification?.message || raw.error_message || '';
+      if (!t && tool === 'ask_question' && Array.isArray(ti.questions) && ti.questions[0] && ti.questions[0].question) {
+        t = '提问：' + String(ti.questions[0].question);
+      }
+      if (!t && hasReqFeedback) {
+        const rawDesc = (agMeta.Summary !== undefined ? agMeta.Summary : agMeta.summary) || ti.file_path || '';
+        const firstLine = String(rawDesc).split(/\r?\n/)[0].trim();
+        t = '需要你审批计划：' + firstLine;
+      }
+      if (!t) {
+        const errStr = String(raw.error || '').trim();
+        const reason = String(raw.terminationReason || '').toUpperCase();
+        if (errStr) {
+          t = '执行出错：' + errStr;
+        } else if (reason === 'ERROR') {
+          t = '执行出错中断，需要你处理';
+        } else if (reason === 'MAX_INVOCATIONS' || reason === 'MAX_FORCED_INVOCATIONS' || reason === 'MAX_STEPS_EXCEEDED') {
+          t = '已达最大步数上限，需要你确认继续';
+        } else if (reason === 'MAX_TOKEN_BUDGET_EXCEEDED') {
+          t = '已超 Token 预算上限，需要你介入';
+        } else if (reason === 'TERMINAL_STEP_TYPE') {
+          t = '等待你确认或审批当前步骤';
+        }
+      }
+      if (!t) t = '请求你的注意';
       body = userName ? `${userName}，${device} 上的 ${agentName} ${t}` : `${device} 上的 ${agentName} ${t}`;
       if (body.length > 80) body = body.slice(0, 77) + '...';
       break;

@@ -54,10 +54,13 @@ function jsonResponse(data, status) {
  */
 export function inferAgEventName(rawEvent) {
   if (!rawEvent) return '';
-  if (rawEvent.toolCall && typeof rawEvent.stepIdx === 'number') return 'PreToolUse';
-  if (!rawEvent.toolCall && typeof rawEvent.stepIdx === 'number') return 'PostToolUse';
-  if (rawEvent.terminationReason !== undefined && rawEvent.fullyIdle !== undefined) return 'Stop';
+  if (rawEvent.terminationReason !== undefined || rawEvent.fullyIdle !== undefined) return 'Stop';
+  if (typeof rawEvent.stepIdx === 'number') {
+    if (rawEvent.error !== undefined || !rawEvent.toolCall) return 'PostToolUse';
+    return 'PreToolUse';
+  }
   if (typeof rawEvent.invocationNum === 'number') return 'PreInvocation';
+  if (rawEvent.conversationId !== undefined && (rawEvent.workspacePaths !== undefined || rawEvent.artifactDirectoryPath !== undefined)) return 'SessionStart';
   return '';
 }
 
@@ -132,17 +135,49 @@ export function parseEvent(rawEvent, eventName) {
     }
     if (agArgs.CommandLine !== undefined) agInput.command = agArgs.CommandLine;
     if (agArgs.TargetFile !== undefined) agInput.file_path = agArgs.TargetFile;
+    if (agInput.file_path === undefined) {
+      if (agArgs.Path !== undefined) agInput.file_path = agArgs.Path;
+      else if (agArgs.AbsolutePath !== undefined) agInput.file_path = agArgs.AbsolutePath;
+      else if (agArgs.DirectoryPath !== undefined) agInput.file_path = agArgs.DirectoryPath;
+    }
     if (agArgs.Url !== undefined) agInput.url = agArgs.Url;
+    if (agArgs.Action !== undefined) agInput.action = agArgs.Action;
+    if (agArgs.Target !== undefined) agInput.target = agArgs.Target;
+    if (agArgs.Reason !== undefined) agInput.reason = agArgs.Reason;
     parsed.tool_input = agInput;
   }
 
-  var command = parsed.tool_input.command || '';
-  var filePath = parsed.tool_input.file_path || '';
-  var url = parsed.tool_input.url || '';
-  if (command) parsed.summary = parsed.tool_name + ': ' + command.slice(0, 120);
-  else if (filePath) parsed.summary = parsed.tool_name + ': ' + filePath;
-  else if (url) parsed.summary = parsed.tool_name + ': ' + url;
-  else parsed.summary = parsed.tool_name || 'Unknown';
+  var ti = parsed.tool_input;
+  var command = ti.command || '';
+  var filePath = ti.file_path || '';
+  var url = ti.url || '';
+  var toolNameLower = (parsed.tool_name || '').toLowerCase();
+  var agMeta = ti.ArtifactMetadata || ti.artifactMetadata;
+  var hasReqFeedback = !!(agMeta && (agMeta.RequestFeedback === true || agMeta.requestFeedback === true));
+  var isAgWriteTool = toolNameLower === 'write_file' || toolNameLower === 'write_to_file' ||
+    toolNameLower === 'edit_file' || toolNameLower === 'replace_file_content' ||
+    toolNameLower === 'multi_replace_file_content';
+
+  if (toolNameLower === 'ask_question' && Array.isArray(ti.questions) && ti.questions[0] && ti.questions[0].question) {
+    parsed.summary = String(ti.questions[0].question).slice(0, 120);
+  } else if (toolNameLower === 'ask_permission') {
+    var permMain = [ti.action || ti.Action, ti.target || ti.Target].filter(Boolean).join(': ');
+    var permReason = ti.reason || ti.Reason || '';
+    var permText = permMain + (permReason ? ' (' + permReason + ')' : '');
+    parsed.summary = permText ? permText.slice(0, 120) : (parsed.tool_name || 'ask_permission');
+  } else if (isAgWriteTool && hasReqFeedback) {
+    var rawDesc = (agMeta.Summary !== undefined ? agMeta.Summary : agMeta.summary) || filePath || '';
+    var firstLine = String(rawDesc).split(/\r?\n/)[0].trim();
+    parsed.summary = ('计划/产物审批：' + firstLine).slice(0, 120);
+  } else if (command) {
+    parsed.summary = parsed.tool_name + ': ' + command.slice(0, 120);
+  } else if (filePath) {
+    parsed.summary = parsed.tool_name + ': ' + filePath;
+  } else if (url) {
+    parsed.summary = parsed.tool_name + ': ' + url;
+  } else {
+    parsed.summary = parsed.tool_name || 'Unknown';
+  }
 
   var errorKeywords = ['error', 'failed', 'exception', 'traceback', 'exit code'];
   parsed.has_error = errorKeywords.some(function(kw) { return parsed.text_lower.includes(kw); });
@@ -256,7 +291,9 @@ export async function onRequestPost(context) {
     // 旧配置无 agents 段时必须默认启用，不得因缺字段静音
     var agentEnabled = ((config.agents || {})[agentInfo.id] || {}).enabled !== false;
     // turn_paused：本轮结束但仍有后台任务（subagent 等）——只记日志，不推送
-    var shouldNotify = eventType !== 'turn_paused' && agentEnabled;
+    // Antigravity 的 info 事件（如只读/低风险 PreToolUse、PostToolUse、SessionStart 等）同样只记日志不推送
+    var silentEvent = eventType === 'turn_paused' || (agentInfo.id === 'antigravity' && eventType === 'info');
+    var shouldNotify = !silentEvent && agentEnabled;
 
     // 8. 构建消息
     var message = buildMessage(eventType, parsed, null, null, null, parsed.summary, config, payload.dev, agentInfo.name);
@@ -282,7 +319,7 @@ export async function onRequestPost(context) {
       // 失败原因写入 push_error（Bark HTTP 错误 / 超时 / key 未配置等），事件页可见。
       var pushed = false;
       var pushError = '';
-      if (!agentEnabled && eventType !== 'turn_paused') {
+      if (!agentEnabled && !silentEvent) {
         // 该来源被静音：不进推送分支，仅记录静音原因
         pushError = 'agent_muted';
       } else if (shouldNotify) {

@@ -358,26 +358,54 @@ function AntigravityTab({
   copied: string | null;
   copy: CopyFn;
 }) {
-  // 内联 curl（同 Codex 页签，零脚本）。Antigravity 的事件 JSON 不带事件名，
-  // 必须按注册的事件带上 X-Hook-Event 头告知 CloudHook
-  const agCurl = (event: string) =>
-    `curl -sS -m 10 -X POST '${endpoint}' -H 'Content-Type: application/json' -H 'X-CloudHook-Token: ${tokenValue}' -H 'X-Agent-Type: antigravity' -H 'X-Hook-Event: ${event}' --data-binary @- >/dev/null 2>&1 || true`;
+  // 内联 curl（零脚本）。Antigravity 的事件 JSON 不带事件名，必须按注册事件带上 X-Hook-Event 头；
+  // 且 Antigravity 要求 hook stdout 必须输出合法 JSON（如 {"decision":"allow"} / {"decision":"stop"}）。
+  const preToolUseCmd = `curl -sS --connect-timeout 3 -m 5 -X POST '${endpoint}' -H 'Content-Type: application/json' -H 'X-CloudHook-Token: ${tokenValue}' -H 'X-Agent-Type: antigravity' -H 'X-Hook-Event: PreToolUse' --data-binary @- >/dev/null 2>&1 || true; echo '{"decision":"allow"}'`;
 
-  const antigravityJson = `{
-  "cloudhook": {
-    "Stop": [
-      { "type": "command", "command": "${agCurl('Stop')}", "timeout": 30 }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "run_command",
-        "hooks": [
-          { "type": "command", "command": "${agCurl('PreToolUse')}" }
-        ]
-      }
-    ]
-  }
-}`;
+  const stopCmd = `b=$(cat); case "$b" in *'"fullyIdle":false'*|*'"fullyIdle": false'*|*'"terminationReason":"USER_CANCELED"'*|*'"terminationReason": "USER_CANCELED"'*|*'"terminationReason":"TERMINAL_CUSTOM_HOOK"'*|*'"terminationReason": "TERMINAL_CUSTOM_HOOK"'*) ;; *) printf '%s' "$b" | curl -sS --connect-timeout 3 -m 5 -X POST '${endpoint}' -H 'Content-Type: application/json' -H 'X-CloudHook-Token: ${tokenValue}' -H 'X-Agent-Type: antigravity' -H 'X-Hook-Event: Stop' --data-binary @- >/dev/null 2>&1 || true ;; esac; echo '{"decision":"stop"}'`;
+
+  const antigravityJson = JSON.stringify(
+    {
+      cloudhook: {
+        PreToolUse: [
+          {
+            matcher: 'ask_question|ask_permission',
+            hooks: [
+              {
+                type: 'command',
+                command: preToolUseCmd,
+                timeout: 10,
+              },
+            ],
+          },
+        ],
+        Stop: [
+          {
+            type: 'command',
+            command: stopCmd,
+            timeout: 10,
+          },
+        ],
+      },
+    },
+    null,
+    2
+  );
+
+  const highRiskRunCommandJson = JSON.stringify(
+    {
+      matcher: 'run_command',
+      hooks: [
+        {
+          type: 'command',
+          command: preToolUseCmd,
+          timeout: 10,
+        },
+      ],
+    },
+    null,
+    2
+  );
 
   return (
     <>
@@ -386,40 +414,106 @@ function AntigravityTab({
         <h2 className="text-lg font-semibold text-gray-900 mb-3 tracking-tight">📝 配置步骤</h2>
         <div className="space-y-2 text-sm text-gray-700 tracking-wide">
           <p>
-            Antigravity 同样只支持 <code className="px-2 py-0.5 bg-gray-200 rounded">command</code> 型 hook，下方配置的 command
-            已内联 curl 直接读 stdin 转发，<strong>无需任何脚本文件</strong>。它的事件 JSON 不带事件名字段，
-            所以每条 command 都按注册的事件带上了 <code className="px-2 py-0.5 bg-gray-200 rounded">X-Hook-Event</code> 头。
+            Antigravity 仅支持 <code className="px-2 py-0.5 bg-gray-200 rounded">command</code> 型 hook，下方配置已内联 curl 读 stdin 转发并输出合规 JSON 决策，<strong>无需任何脚本文件</strong>。其事件 payload 不含事件名字段，因此每条 command 均携带了 <code className="px-2 py-0.5 bg-gray-200 rounded">X-Hook-Event</code> 请求头。
           </p>
-          <p>1. 打开 <code className="px-2 py-0.5 bg-gray-200 rounded">~/.gemini/config/hooks.json</code>（或工作区内的 <code className="px-2 py-0.5 bg-gray-200 rounded">.agents/hooks.json</code>），把下方配置粘贴进去——端点和 Token 已自动填好</p>
-          <p>2. Windows 环境把命令中的 <code className="px-2 py-0.5 bg-gray-200 rounded">curl</code> 与 <code className="px-2 py-0.5 bg-gray-200 rounded">/dev/null</code> 分别换成 <code className="px-2 py-0.5 bg-gray-200 rounded">curl.exe</code> 与 <code className="px-2 py-0.5 bg-gray-200 rounded">NUL</code>（或把 command 指向你自己的脚本）</p>
-          <p>3. 保存后触发一次 Antigravity 事件（如让它调用一次工具或完成一轮响应），确认 Bark 收到推送</p>
+          <p>1. 打开 <code className="px-2 py-0.5 bg-gray-200 rounded">~/.gemini/config/hooks.json</code>（或工作区内的 <code className="px-2 py-0.5 bg-gray-200 rounded">.agents/hooks.json</code>，需使用 <strong>UTF-8 无 BOM</strong> 编码），粘贴下方推荐配置——端点和 Token 已自动填好</p>
+          <p>2. 在 Antigravity CLI 中执行 <code className="px-2 py-0.5 bg-gray-200 rounded">/hooks</code>（或在 IDE 的 Customizations &gt; Hooks 面板）确认配置已正确加载</p>
+          <p>3. Windows 环境请将命令中的 <code className="px-2 py-0.5 bg-gray-200 rounded">curl</code> 替换为 <code className="px-2 py-0.5 bg-gray-200 rounded">curl.exe</code>，并改用 cmd.exe / PowerShell 语法（如用 <code className="px-2 py-0.5 bg-gray-200 rounded">NUL</code> 替代 <code className="px-2 py-0.5 bg-gray-200 rounded">/dev/null</code>）</p>
+          <p>4. 触发一次提问/审批或完成一轮对话，确认 Bark 收到推送</p>
         </div>
       </div>
 
       <CodeBlockCard
-        title="hooks.json 配置"
-        subtitle="Stop 上报完成状态，PreToolUse 仅对 run_command 触发以避免刷屏"
+        title="推荐配置（零噪音 hooks.json）"
+        subtitle="PreToolUse 仅匹配 ask_question|ask_permission；Stop 本地预过滤取消/非完全空闲状态，仅在需要关注时推送"
+        badge="~/.gemini/config/hooks.json"
         code={antigravityJson}
         copyKey="antigravity-json"
         copied={copied}
         onCopy={copy}
       />
 
-      {/* 说明 */}
+      <CodeBlockCard
+        title="可选：高危命令告警（run_command）"
+        subtitle="追加到上方 cloudhook.PreToolUse 数组中。CloudHook 后端会自动静默低/中风险命令，仅推送高危/严重命令（sudo、rm -rf、git push --force、curl|sh 等）"
+        code={highRiskRunCommandJson}
+        copyKey="antigravity-run-command-json"
+        copied={copied}
+        onCopy={copy}
+      />
+
+      {/* 事件映射与标准填写规范 */}
       <div className="mb-6 bg-white/80 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
-          <h3 className="text-lg font-semibold text-gray-900 tracking-tight">说明</h3>
+          <h3 className="text-lg font-semibold text-gray-900 tracking-tight">事件映射与标准填写规范</h3>
+          <p className="text-sm text-gray-600 mt-0.5 tracking-wide">CloudHook 后端对 Antigravity 事件的分类策略，以及官方配置格式约束</p>
         </div>
-        <div className="p-6 space-y-2 text-sm text-gray-700 tracking-wide">
-          <p>
-            • <code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">Stop</code> 事件按 <code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">fullyIdle</code> 区分「已完成」（true）与「本轮结束，仍有后台任务」（false）
-          </p>
-          <p>
-            • <code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">PreToolUse</code> 会映射为「需要权限」通知，且<strong>每次工具调用前都会触发</strong>；建议只对 <code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">run_command</code> 配 matcher，嫌吵可以把 <code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">PreToolUse</code> 整段去掉，只留 <code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">Stop</code>
-          </p>
-          <p>
-            • 配置结构注意：<code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">Stop</code> 是直接跟 handler 数组（无 matcher 层），<code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">PreToolUse</code> 才有 <code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">matcher</code> + <code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">hooks</code> 两层——两者结构不同是官方设计，不要改成一样的
-          </p>
+        <div className="p-6 overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead>
+              <tr className="text-gray-500 border-b border-gray-200">
+                <th className="pb-2 pr-4 font-medium">Antigravity 事件 / 场景</th>
+                <th className="pb-2 pr-4 font-medium">触发时机</th>
+                <th className="pb-2 font-medium">到达后处理</th>
+              </tr>
+            </thead>
+            <tbody className="text-gray-700">
+              <tr className="border-b border-gray-100">
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">PreToolUse (ask_question)</code></td>
+                <td className="py-2 pr-4">Agent 向你发起提问等待选择或回答</td>
+                <td className="py-2"><span className="text-emerald-600 font-medium">推送通知</span>（需要你，展示问题摘要）</td>
+              </tr>
+              <tr className="border-b border-gray-100">
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">PreToolUse (ask_permission)</code></td>
+                <td className="py-2 pr-4">Agent 请求敏感操作审批</td>
+                <td className="py-2"><span className="text-emerald-600 font-medium">推送通知</span>（需要权限，展示操作与原因）</td>
+              </tr>
+              <tr className="border-b border-gray-100">
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">PreToolUse (run_command)</code><span className="ml-1 text-xs text-gray-400">可选</span></td>
+                <td className="py-2 pr-4">执行终端命令前</td>
+                <td className="py-2"><span className="text-emerald-600 font-medium">仅高危/严重命令推送</span>（低/中风险自动静默记日志）</td>
+              </tr>
+              <tr className="border-b border-gray-100">
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">PreToolUse (写文件 RequestFeedback)</code><span className="ml-1 text-xs text-gray-400">可选</span></td>
+                <td className="py-2 pr-4">写入/编辑文件且附带计划/产物审批标记</td>
+                <td className="py-2"><span className="text-emerald-600 font-medium">推送通知</span>（需要你，计划/产物审批）</td>
+              </tr>
+              <tr className="border-b border-gray-100">
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">Stop (正常完成)</code></td>
+                <td className="py-2 pr-4">对话回合正常结束（<code className="px-1 py-0.5 bg-gray-100 rounded text-xs">fullyIdle: true</code>）</td>
+                <td className="py-2"><span className="text-emerald-600 font-medium">推送通知</span>（已完成）</td>
+              </tr>
+              <tr className="border-b border-gray-100">
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">Stop (异常/触顶/终端步骤)</code></td>
+                <td className="py-2 pr-4"><code className="px-1 py-0.5 bg-gray-100 rounded text-xs">ERROR</code>、步数/Token 触顶或 <code className="px-1 py-0.5 bg-gray-100 rounded text-xs">TERMINAL_STEP_TYPE</code></td>
+                <td className="py-2"><span className="text-emerald-600 font-medium">推送通知</span>（需要你，提示异常或触顶原因）</td>
+              </tr>
+              <tr>
+                <td className="py-2 pr-4"><code className="px-1.5 py-0.5 bg-gray-100 rounded text-xs">Stop (USER_CANCELED / fullyIdle:false)</code></td>
+                <td className="py-2 pr-4">用户主动取消或本轮仍有后台任务未完全空闲</td>
+                <td className="py-2"><span className="text-gray-500 font-medium">本地跳过 / 只记日志</span>（不打扰）</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div className="mt-4 pt-4 border-t border-gray-100 space-y-2 text-xs text-gray-600 tracking-wide">
+            <p className="font-semibold text-gray-700">Antigravity 核心填写规范：</p>
+            <p>
+              • <strong>Flat vs Grouped 结构</strong>：<code className="px-1 py-0.5 bg-gray-100 rounded">SessionStart</code> / <code className="px-1 py-0.5 bg-gray-100 rounded">PreInvocation</code> / <code className="px-1 py-0.5 bg-gray-100 rounded">PostInvocation</code> / <code className="px-1 py-0.5 bg-gray-100 rounded">Stop</code> 为 Flat 结构（直接填 handler 数组）；<code className="px-1 py-0.5 bg-gray-100 rounded">PreToolUse</code> / <code className="px-1 py-0.5 bg-gray-100 rounded">PostToolUse</code> 为 Grouped 结构（外层 <code className="px-1 py-0.5 bg-gray-100 rounded">matcher</code> + <code className="px-1 py-0.5 bg-gray-100 rounded">hooks</code> 数组），切勿混写。
+            </p>
+            <p>
+              • <strong>stdout 必须输出合法 JSON</strong>：<code className="px-1 py-0.5 bg-gray-100 rounded">PreToolUse</code> 末尾必须输出 <code className="px-1 py-0.5 bg-gray-100 rounded">{'{"decision":"allow"}'}</code>（将审批权交还默认策略，不会绕过安全弹窗）；<code className="px-1 py-0.5 bg-gray-100 rounded">Stop</code> 末尾输出 <code className="px-1 py-0.5 bg-gray-100 rounded">{'{"decision":"stop"}'}</code>。
+            </p>
+            <p>
+              • <strong>同步阻塞与短超时</strong>：Hook 为同步阻塞执行，curl 务必配置 <code className="px-1 py-0.5 bg-gray-100 rounded">--connect-timeout 3 -m 5</code> 与 <code className="px-1 py-0.5 bg-gray-100 rounded">|| true</code>，并将 handler 的 <code className="px-1 py-0.5 bg-gray-100 rounded">timeout</code> 设为 <code className="px-1 py-0.5 bg-gray-100 rounded">10</code> 秒，防止网络波动卡死 Agent。
+            </p>
+            <p>
+              • <strong>文件编码与校验</strong>：<code className="px-1 py-0.5 bg-gray-100 rounded">hooks.json</code> 必须保存为 <strong>UTF-8 无 BOM</strong>；修改后可在 CLI 中运行 <code className="px-1 py-0.5 bg-gray-100 rounded">/hooks</code> 验证配置解析状态。
+            </p>
+            <p>
+              • <strong>Windows 提示</strong>：Windows 下请使用 <code className="px-1 py-0.5 bg-gray-100 rounded">curl.exe</code> 并改用 cmd.exe / PowerShell 语法（或将 command 指向本地脚本），同时确保 stdout 仍只输出合法 JSON。
+            </p>
+          </div>
         </div>
       </div>
     </>

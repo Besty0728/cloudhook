@@ -30,6 +30,8 @@
 import * as sharedEdge from '../edge-functions/_shared.js';
 import { parseEvent, inferAgEventName } from '../edge-functions/api/hook.js';
 import { detectAgent as detectAgentLib } from '../lib/agent-detect.js';
+import { classify as classifyLib } from '../lib/classifier.js';
+import { buildMessage as buildMessageLib, getRiskLevel as getRiskLevelLib } from '../lib/message-builder.js';
 
 const results = [];
 function check(name, cond, detail = '') {
@@ -163,7 +165,14 @@ check("[5] inferAgEventName → 'PreToolUse'", eventNameAgPreToolUse === 'PreToo
 
 const parsedAgPreToolUse = parseEvent(agPreToolUse, eventNameAgPreToolUse);
 check('[5] parseEvent 后 tool_input.command 正确', parsedAgPreToolUse.tool_input.command === 'npm test', parsedAgPreToolUse.tool_input.command);
-check('[5] Antigravity PreToolUse classify=permission_required', sharedEdge.classify(parsedAgPreToolUse, agentAgPreToolUse.id) === 'permission_required');
+check('[5] Antigravity PreToolUse(npm test) classify=info', sharedEdge.classify(parsedAgPreToolUse, agentAgPreToolUse.id) === 'info');
+
+const agPreToolUseDangerous = {
+  ...agPreToolUse,
+  toolCall: { name: 'run_command', args: { CommandLine: 'rm -rf /tmp/x', Cwd: '/workspace/project' } }
+};
+const parsedAgDangerous = parseEvent(agPreToolUseDangerous, resolveEventName(agPreToolUseDangerous));
+check('[5] Antigravity PreToolUse(rm -rf /tmp/x) classify=permission_required', sharedEdge.classify(parsedAgDangerous, 'antigravity') === 'permission_required');
 
 // ---------------------------------------------------------------------------
 // 用例 6：Antigravity Stop —— fullyIdle true/false
@@ -358,6 +367,126 @@ check("[18] AGENT_NAMES.kimi_code === 'Kimi Code'",
 const kimiDoneMsg = sharedEdge.buildMessage('task_done', null, null, null, null, '', null, 'Dev', 'Kimi Code');
 check("[18] buildMessage(task_done, ..., 'Kimi Code') 标题 'Kimi Code 已完成'",
   kimiDoneMsg.title === 'Kimi Code 已完成', kimiDoneMsg.title);
+
+// ---------------------------------------------------------------------------
+// 用例 19：Antigravity 精细分类、摘要、风险评级与消息文案
+// ---------------------------------------------------------------------------
+const agBase = {
+  conversationId: 'ec33ebf9-0cba-4100-8142-c61503f6c587',
+  workspacePaths: ['/workspace/project'],
+  transcriptPath: '~/.gemini/antigravity/brain/x/.system_generated/logs/transcript.jsonl',
+  artifactDirectoryPath: '~/.gemini/antigravity/brain/x'
+};
+
+// SessionStart（仅通用字段，无 stepIdx/toolCall/terminationReason/invocationNum）
+const agSessionStart = { ...agBase };
+const agentAgSession = sharedEdge.detectAgent(reqNoHeaders, agSessionStart);
+check('[19] AG SessionStart detect=antigravity/shape', agentAgSession.id === 'antigravity' && agentAgSession.source === 'shape', JSON.stringify(agentAgSession));
+check("[19] AG SessionStart inferAgEventName='SessionStart'", resolveEventName(agSessionStart) === 'SessionStart');
+check('[19] AG SessionStart classify=info', sharedEdge.classify(parseEvent(agSessionStart, 'SessionStart'), 'antigravity') === 'info');
+
+// ask_question
+const agAskQuestion = {
+  ...agBase,
+  stepIdx: 5,
+  toolCall: { name: 'ask_question', args: { questions: [{ question: '是否允许覆盖现有配置？' }] } }
+};
+const parsedAgAskQ = parseEvent(agAskQuestion, resolveEventName(agAskQuestion));
+check('[19] AG ask_question classify=attention_required', sharedEdge.classify(parsedAgAskQ, 'antigravity') === 'attention_required');
+check('[19] AG ask_question summary 含问题文本', parsedAgAskQ.summary.includes('是否允许覆盖现有配置？'), parsedAgAskQ.summary);
+const msgAgAskQ = sharedEdge.buildMessage('attention_required', parsedAgAskQ, null, null, null, parsedAgAskQ.summary, null, 'Mac', 'Antigravity');
+check('[19] AG ask_question body 含 提问：', msgAgAskQ.body.includes('提问：是否允许覆盖现有配置？'), msgAgAskQ.body);
+
+// ask_permission
+const agAskPerm = {
+  ...agBase,
+  stepIdx: 6,
+  toolCall: { name: 'ask_permission', args: { Action: 'delete', Target: '/etc/hosts', Reason: 'cleanup' } }
+};
+const parsedAgAskPerm = parseEvent(agAskPerm, resolveEventName(agAskPerm));
+check('[19] AG ask_permission classify=permission_required', sharedEdge.classify(parsedAgAskPerm, 'antigravity') === 'permission_required');
+check('[19] AG ask_permission summary 含 action/target/reason', parsedAgAskPerm.summary === 'delete: /etc/hosts (cleanup)', parsedAgAskPerm.summary);
+check('[19] AG ask_permission risk=high', sharedEdge.getRiskLevel('permission_required', parsedAgAskPerm) === 'high');
+
+// write_file with & without RequestFeedback
+const agWriteNoFeedback = {
+  ...agBase,
+  stepIdx: 7,
+  toolCall: { name: 'write_file', args: { Path: '/workspace/a.js', ArtifactMetadata: { RequestFeedback: false, Summary: 'Add helper' } } }
+};
+const parsedAgWriteNoFb = parseEvent(agWriteNoFeedback, resolveEventName(agWriteNoFeedback));
+check('[19] AG write_file(RequestFeedback:false) classify=info', sharedEdge.classify(parsedAgWriteNoFb, 'antigravity') === 'info');
+
+const agWriteWithFeedback = {
+  ...agBase,
+  stepIdx: 8,
+  toolCall: { name: 'write_file', args: { Path: '/workspace/plan.md', ArtifactMetadata: { RequestFeedback: true, Summary: 'Implementation Plan\nLine 2' } } }
+};
+const parsedAgWriteFb = parseEvent(agWriteWithFeedback, resolveEventName(agWriteWithFeedback));
+check('[19] AG write_file(RequestFeedback:true) classify=attention_required', sharedEdge.classify(parsedAgWriteFb, 'antigravity') === 'attention_required');
+check('[19] AG write_file(RequestFeedback:true) summary 取首行', parsedAgWriteFb.summary === '计划/产物审批：Implementation Plan', parsedAgWriteFb.summary);
+const msgAgWriteFb = sharedEdge.buildMessage('attention_required', parsedAgWriteFb, null, null, null, parsedAgWriteFb.summary, null, 'Mac', 'Antigravity');
+check('[19] AG write_file(RequestFeedback:true) body 含 需要你审批计划：', msgAgWriteFb.body.includes('需要你审批计划：Implementation Plan'), msgAgWriteFb.body);
+
+// PostToolUse (no toolCall, and with toolCall + error)
+const agPostToolNoCall = { ...agBase, stepIdx: 9 };
+check("[19] AG PostToolUse(无 toolCall) inferAgEventName='PostToolUse'", resolveEventName(agPostToolNoCall) === 'PostToolUse');
+check('[19] AG PostToolUse(无 toolCall) classify=info', sharedEdge.classify(parseEvent(agPostToolNoCall, 'PostToolUse'), 'antigravity') === 'info');
+
+const agPostToolErr = { ...agBase, stepIdx: 10, toolCall: { name: 'run_command', args: { CommandLine: 'ls' } }, error: 'exit 1' };
+check("[19] AG PostToolUse(带 error) inferAgEventName='PostToolUse'", resolveEventName(agPostToolErr) === 'PostToolUse');
+
+// Stop terminationReason 分支
+const agStopCases = [
+  ['USER_CANCELED', { ...agBase, terminationReason: 'USER_CANCELED', fullyIdle: true }, 'info'],
+  ['TERMINAL_CUSTOM_HOOK', { ...agBase, terminationReason: 'TERMINAL_CUSTOM_HOOK', fullyIdle: true }, 'info'],
+  ['ERROR', { ...agBase, terminationReason: 'ERROR', error: 'boom', fullyIdle: true }, 'attention_required'],
+  ['MAX_INVOCATIONS', { ...agBase, terminationReason: 'MAX_INVOCATIONS', fullyIdle: true }, 'attention_required'],
+  ['TERMINAL_STEP_TYPE', { ...agBase, terminationReason: 'TERMINAL_STEP_TYPE', fullyIdle: true }, 'attention_required'],
+  ['NO_TOOL_CALL', { ...agBase, terminationReason: 'NO_TOOL_CALL', fullyIdle: true }, 'task_done'],
+  ['fullyIdle:false', { ...agBase, terminationReason: 'NO_TOOL_CALL', fullyIdle: false }, 'turn_paused']
+];
+for (const [label, raw, expected] of agStopCases) {
+  const ev = resolveEventName(raw);
+  const p = parseEvent(raw, ev);
+  const got = sharedEdge.classify(p, 'antigravity');
+  check(`[19] AG Stop(${label}) → ${expected}`, got === expected, got);
+}
+
+const parsedAgStopErr = parseEvent({ ...agBase, terminationReason: 'ERROR', error: 'boom', fullyIdle: true }, 'Stop');
+check('[19] AG Stop(ERROR) risk=high', sharedEdge.getRiskLevel('attention_required', parsedAgStopErr) === 'high');
+const msgAgStopErr = sharedEdge.buildMessage('attention_required', parsedAgStopErr, null, null, null, '', null, 'Mac', 'Antigravity');
+check('[19] AG Stop(ERROR) body 含 执行出错：boom', msgAgStopErr.body.includes('执行出错：boom'), msgAgStopErr.body);
+
+// ---------------------------------------------------------------------------
+// 用例 20：lib/classifier.js & lib/message-builder.js 与 _shared.js 双份一致性
+// ---------------------------------------------------------------------------
+const parityPayloads = [
+  ['agPreToolUse(npm test)', agPreToolUse, 'antigravity'],
+  ['agPreToolUse(rm -rf)', agPreToolUseDangerous, 'antigravity'],
+  ['agAskQuestion', agAskQuestion, 'antigravity'],
+  ['agAskPerm', agAskPerm, 'antigravity'],
+  ['agWriteFb', agWriteWithFeedback, 'antigravity'],
+  ['agStopErr', { ...agBase, terminationReason: 'ERROR', error: 'boom', fullyIdle: true }, 'antigravity'],
+  ['agSessionStart', agSessionStart, 'antigravity'],
+  ['ccNotification', ccNotification, 'claude_code'],
+  ['codexPermission', codexPermission, 'codex'],
+  ['kimiStopFailure', kimiStopFailure, 'kimi_code']
+];
+for (const [label, raw, agentId] of parityPayloads) {
+  const p = parseEvent(raw, resolveEventName(raw));
+  const c1 = sharedEdge.classify(p, agentId);
+  const c2 = classifyLib(p, agentId);
+  check(`[20] classify 一致 - ${label}`, c1 === c2, `_shared=${c1} lib=${c2}`);
+
+  const r1 = sharedEdge.getRiskLevel(c1, p);
+  const r2 = getRiskLevelLib(c1, p);
+  check(`[20] getRiskLevel 一致 - ${label}`, r1 === r2, `_shared=${r1} lib=${r2}`);
+
+  const m1 = sharedEdge.buildMessage(c1, p, null, null, null, p.summary, null, 'Mac', sharedEdge.AGENT_NAMES[agentId]);
+  const m2 = buildMessageLib(c1, p, null, null, null, p.summary, null, 'Mac', sharedEdge.AGENT_NAMES[agentId]);
+  check(`[20] buildMessage 一致 - ${label}`, JSON.stringify(m1) === JSON.stringify(m2), `_shared=${JSON.stringify(m1)} lib=${JSON.stringify(m2)}`);
+}
 
 // ---------------------------------------------------------------------------
 const failed = results.filter(r => !r.ok);
